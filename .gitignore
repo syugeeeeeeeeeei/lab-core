@@ -1,1 +1,13 @@
+.DS_Store
+
+# Runtime data
+data/
+stacks/
+dnsmasq/lab.conf
+
+# Node artifacts
+manager/node_modules/
+manager/dist/
+
+# Env files
 .env
