@@ -8,6 +8,7 @@ import { applicationsRouter } from "./routes/applications.js";
 import { eventsRouter } from "./routes/events.js";
 import { infrastructureRouter } from "./routes/infrastructure.js";
 import { jobsRouter } from "./routes/jobs.js";
+import { logsRouter } from "./routes/logs.js";
 import { systemRouter } from "./routes/system.js";
 import { testingRouter } from "./routes/testing.js";
 import { recordEvent } from "./services/events.js";
@@ -26,6 +27,7 @@ app.route("/api/applications", applicationsRouter);
 app.route("/api/jobs", jobsRouter);
 app.route("/api/events", eventsRouter);
 app.route("/api/infrastructure", infrastructureRouter);
+app.route("/api/logs", logsRouter);
 app.route("/api/testing", testingRouter);
 
 app.get("/api", (c) => {

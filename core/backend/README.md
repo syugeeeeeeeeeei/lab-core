@@ -15,10 +15,14 @@
 - `POST /api/applications/:applicationId/restart`
 - `POST /api/applications/:applicationId/rebuild`
 - `POST /api/applications/:applicationId/update-check`
+- `POST /api/applications/:applicationId/update`
+- `POST /api/applications/:applicationId/rollback`
 - `DELETE /api/applications/:applicationId`
 - `GET /api/jobs`
 - `GET /api/events`
 - `POST /api/infrastructure/sync`
+- `GET /api/logs/:applicationId/services`
+- `GET /api/logs/:applicationId?service=&tail=`
 - `GET /api/testing/registration-fixtures`
 
 ## 実行モード

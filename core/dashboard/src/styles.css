@@ -270,6 +270,86 @@ td p {
   gap: 6px;
 }
 
+.logs-card {
+  border-color: #cdd8ee;
+}
+
+.logs-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.logs-header h2 {
+  margin-bottom: 6px;
+}
+
+.logs-meta {
+  margin: 0;
+  color: var(--text-sub);
+  font-size: 0.82rem;
+}
+
+.logs-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: end;
+}
+
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
+.log-viewer {
+  background: #0d1117;
+  color: #d5dde6;
+  border-radius: 12px;
+  border: 1px solid #1f2734;
+  padding: 10px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.log-empty {
+  margin: 0;
+  color: #96a8bd;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.82rem;
+}
+
+.log-lines {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.log-line {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.79rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.log-line.warning {
+  color: #ffdca8;
+}
+
+.log-line.error {
+  color: #ffb3b3;
+}
+
 .delete-card {
   border-color: #efcdcd;
   background: #fff9f9cc;
@@ -346,6 +426,10 @@ td p {
 
   .hero {
     flex-direction: column;
+  }
+
+  .logs-actions {
+    width: 100%;
   }
 }
 

@@ -89,6 +89,62 @@ function setCommitInfo(applicationId: string, commitHash: string): void {
   ).run(applicationId, commitHash, commitHash, nowIso());
 }
 
+function upsertUpdateInfo(applicationId: string, currentCommit: string, latestRemoteCommit: string, hasUpdate: boolean): void {
+  db.prepare(
+    `
+      INSERT INTO update_info (
+        application_id,
+        current_commit,
+        latest_remote_commit,
+        has_update,
+        checked_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(application_id) DO UPDATE SET
+        current_commit = excluded.current_commit,
+        latest_remote_commit = excluded.latest_remote_commit,
+        has_update = excluded.has_update,
+        checked_at = excluded.checked_at
+    `
+  ).run(applicationId, currentCommit, latestRemoteCommit, hasUpdate ? 1 : 0, nowIso());
+}
+
+function getCommitInfo(applicationId: string): { currentCommit: string | null; previousCommit: string | null } {
+  const row = db
+    .prepare(
+      `
+        SELECT current_commit, previous_commit
+        FROM applications
+        WHERE application_id = ?
+      `
+    )
+    .get(applicationId) as { current_commit: string | null; previous_commit: string | null } | undefined;
+
+  if (!row) {
+    throw new Error("対象アプリが見つかりません。");
+  }
+
+  return {
+    currentCommit: row.current_commit,
+    previousCommit: row.previous_commit
+  };
+}
+
+function setCommitPair(applicationId: string, currentCommit: string, previousCommit: string | null): void {
+  db.prepare(
+    `
+      UPDATE applications
+      SET current_commit = ?,
+          previous_commit = ?,
+          updated_at = ?
+      WHERE application_id = ?
+    `
+  ).run(currentCommit, previousCommit, nowIso(), applicationId);
+}
+
+function dryRunCommit(prefix: string): string {
+  return `${prefix}-${Date.now()}`;
+}
+
 async function ensureRepository(app: AppDeploymentRow): Promise<{ repoPath: string; headCommit: string }> {
   ensureRuntimeRoots();
 
@@ -100,7 +156,7 @@ async function ensureRepository(app: AppDeploymentRow): Promise<{ repoPath: stri
       fs.mkdirSync(repoPath, { recursive: true });
       return {
         repoPath,
-        headCommit: "dry-run"
+        headCommit: dryRunCommit("dry-run")
       };
     }
 
@@ -115,7 +171,7 @@ async function ensureRepository(app: AppDeploymentRow): Promise<{ repoPath: stri
   if (env.executionMode === "dry-run") {
     return {
       repoPath,
-      headCommit: "dry-run"
+      headCommit: dryRunCommit("dry-run")
     };
   }
 
@@ -152,10 +208,7 @@ export async function executeDeployJob(applicationId: string, jobId: string): Pr
   try {
     setAppStatus(applicationId, "Cloning");
     const { repoPath, headCommit } = await ensureRepository(app);
-
-    if (headCommit !== "dry-run") {
-      setCommitInfo(applicationId, headCommit);
-    }
+    setCommitInfo(applicationId, headCommit);
 
     setAppStatus(applicationId, "Deploying");
     const composeFilePath = path.resolve(repoPath, app.compose_path);
@@ -181,6 +234,148 @@ export async function executeDeployJob(applicationId: string, jobId: string): Pr
       applicationId,
       level: "error",
       title: "配備に失敗しました",
+      message
+    });
+  }
+}
+
+export async function executeUpdateJob(applicationId: string, jobId: string): Promise<void> {
+  const app = getAppDeployment(applicationId);
+  startJob(jobId, "update ジョブを開始しました。");
+
+  try {
+    setAppStatus(applicationId, "Deploying");
+    const commitInfo = getCommitInfo(applicationId);
+    const repoPath = path.join(env.appsRoot, app.name);
+
+    if (env.executionMode === "dry-run") {
+      const current = commitInfo.currentCommit ?? dryRunCommit("dry-run-base");
+      const latest = dryRunCommit("dry-run-update");
+      setCommitPair(applicationId, latest, current);
+      upsertUpdateInfo(applicationId, latest, latest, false);
+      setAppStatus(applicationId, "Running");
+      completeJob(jobId, "succeeded", "update 完了 (dry-run)");
+      recordEvent({
+        scope: "update",
+        applicationId,
+        level: "info",
+        title: "更新を適用しました",
+        message: `アプリ ${app.name} を dry-run 更新しました。`
+      });
+      return;
+    }
+
+    if (!fs.existsSync(path.join(repoPath, ".git"))) {
+      throw new Error(`ローカルリポジトリが見つかりません: ${repoPath}`);
+    }
+
+    const git = simpleGit(repoPath);
+    const beforeCommit = (await git.revparse(["HEAD"])).trim();
+    await git.fetch();
+    await git.checkout(app.default_branch);
+    await git.pull("origin", app.default_branch);
+    const afterCommit = (await git.revparse(["HEAD"])).trim();
+
+    const composeFilePath = path.resolve(repoPath, app.compose_path);
+    await runComposeUp(repoPath, composeFilePath);
+
+    setCommitPair(applicationId, afterCommit, beforeCommit);
+    upsertUpdateInfo(applicationId, afterCommit, afterCommit, false);
+    setAppStatus(applicationId, "Running");
+    syncInfrastructure(`update:${app.name}`);
+
+    const unchanged = beforeCommit === afterCommit;
+    completeJob(jobId, "succeeded", unchanged ? "update 完了（差分なし）" : "update 完了");
+    recordEvent({
+      scope: "update",
+      applicationId,
+      level: unchanged ? "info" : "warning",
+      title: unchanged ? "更新差分なし" : "更新を適用しました",
+      message: unchanged
+        ? `アプリ ${app.name} は最新でした。`
+        : `アプリ ${app.name} を ${beforeCommit.slice(0, 7)} -> ${afterCommit.slice(0, 7)} に更新しました。`
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "不明なエラー";
+    setAppStatus(applicationId, "Failed");
+    completeJob(jobId, "failed", message);
+    recordEvent({
+      scope: "update",
+      applicationId,
+      level: "error",
+      title: "更新に失敗しました",
+      message
+    });
+  }
+}
+
+export async function executeRollbackJob(applicationId: string, jobId: string): Promise<void> {
+  const app = getAppDeployment(applicationId);
+  startJob(jobId, "rollback ジョブを開始しました。");
+
+  try {
+    setAppStatus(applicationId, "Rebuilding");
+    const commitInfo = getCommitInfo(applicationId);
+    const currentCommit = commitInfo.currentCommit;
+    const rollbackTarget = commitInfo.previousCommit;
+
+    if (!rollbackTarget) {
+      throw new Error("ロールバック可能な1つ前のコミットがありません。");
+    }
+
+    if (env.executionMode === "dry-run") {
+      const nextPrevious = currentCommit ?? dryRunCommit("dry-run-current");
+      setCommitPair(applicationId, rollbackTarget, nextPrevious);
+      upsertUpdateInfo(applicationId, rollbackTarget, nextPrevious, rollbackTarget !== nextPrevious);
+      setAppStatus(applicationId, "Running");
+      completeJob(jobId, "succeeded", "rollback 完了 (dry-run)");
+      recordEvent({
+        scope: "update",
+        applicationId,
+        level: "warning",
+        title: "1世代ロールバックしました",
+        message: `アプリ ${app.name} を dry-run ロールバックしました。`
+      });
+      return;
+    }
+
+    const repoPath = path.join(env.appsRoot, app.name);
+    if (!fs.existsSync(path.join(repoPath, ".git"))) {
+      throw new Error(`ローカルリポジトリが見つかりません: ${repoPath}`);
+    }
+
+    const git = simpleGit(repoPath);
+    await git.fetch();
+    await git.checkout(rollbackTarget);
+
+    const composeFilePath = path.resolve(repoPath, app.compose_path);
+    await runComposeUp(repoPath, composeFilePath);
+
+    const remoteHead = (await git.revparse([`origin/${app.default_branch}`])).trim();
+    const nextPrevious = currentCommit ?? remoteHead;
+
+    setCommitPair(applicationId, rollbackTarget, nextPrevious);
+    upsertUpdateInfo(applicationId, rollbackTarget, remoteHead, rollbackTarget !== remoteHead);
+    setAppStatus(applicationId, "Running");
+    syncInfrastructure(`rollback:${app.name}`);
+
+    completeJob(jobId, "succeeded", "rollback 完了");
+    recordEvent({
+      scope: "update",
+      applicationId,
+      level: "warning",
+      title: "1世代ロールバックしました",
+      message: `アプリ ${app.name} を ${rollbackTarget.slice(0, 7)} に戻しました。`
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "不明なエラー";
+    setAppStatus(applicationId, "Failed");
+    completeJob(jobId, "failed", message);
+    recordEvent({
+      scope: "update",
+      applicationId,
+      level: "error",
+      title: "ロールバックに失敗しました",
       message
     });
   }

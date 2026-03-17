@@ -23,6 +23,9 @@ export type ApplicationListItem = {
   name: string;
   description: string;
   repository_url: string;
+  default_branch: string;
+  current_commit: string | null;
+  previous_commit: string | null;
   status: string;
   hostname: string;
   public_port: number;
@@ -60,4 +63,14 @@ export type RegistrationFixture = {
   id: string;
   label: string;
   payload: CreateApplicationPayload;
+};
+
+export type ApplicationLogsResponse = {
+  applicationId: string;
+  applicationName: string;
+  service: string | null;
+  tail: number;
+  lines: string[];
+  fetchedAt: string;
+  executionMode: "dry-run" | "execute";
 };

@@ -1,4 +1,12 @@
-import type { ApplicationListItem, CreateApplicationPayload, DeleteMode, RegistrationFixture, SystemEvent, SystemStatus } from "./types";
+import type {
+  ApplicationListItem,
+  ApplicationLogsResponse,
+  CreateApplicationPayload,
+  DeleteMode,
+  RegistrationFixture,
+  SystemEvent,
+  SystemStatus
+} from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:7300";
 
@@ -62,6 +70,18 @@ export async function checkUpdate(applicationId: string): Promise<void> {
   });
 }
 
+export async function applyUpdate(applicationId: string): Promise<void> {
+  await requestJson(`/api/applications/${applicationId}/update`, {
+    method: "POST"
+  });
+}
+
+export async function rollbackApplication(applicationId: string): Promise<void> {
+  await requestJson(`/api/applications/${applicationId}/rollback`, {
+    method: "POST"
+  });
+}
+
 export async function syncInfrastructure(reason = "dashboard"): Promise<void> {
   await requestJson(`/api/infrastructure/sync?reason=${encodeURIComponent(reason)}`, {
     method: "POST"
@@ -78,4 +98,25 @@ export async function deleteApplication(applicationId: string, mode: DeleteMode)
 export async function fetchRegistrationFixtures(): Promise<RegistrationFixture[]> {
   const response = await requestJson<{ fixtures: RegistrationFixture[] }>("/api/testing/registration-fixtures");
   return response.fixtures;
+}
+
+export async function fetchApplicationLogServices(applicationId: string): Promise<string[]> {
+  const response = await requestJson<{ services: string[] }>(`/api/logs/${applicationId}/services`);
+  return response.services;
+}
+
+export async function fetchApplicationLogs(
+  applicationId: string,
+  options: { service?: string; tail?: number } = {}
+): Promise<ApplicationLogsResponse> {
+  const params = new URLSearchParams();
+  if (options.service) {
+    params.set("service", options.service);
+  }
+  if (options.tail) {
+    params.set("tail", String(options.tail));
+  }
+  const query = params.toString();
+  const suffix = query.length > 0 ? `?${query}` : "";
+  return requestJson<ApplicationLogsResponse>(`/api/logs/${applicationId}${suffix}`);
 }

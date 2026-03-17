@@ -10,7 +10,9 @@ import {
   executeDeleteJob,
   executeDeployJob,
   executeRebuildJob,
-  executeRestartJob
+  executeRestartJob,
+  executeRollbackJob,
+  executeUpdateJob
 } from "../services/application-jobs.js";
 import { recordEvent } from "../services/events.js";
 import { createJob, finishJob, startJob } from "../services/jobs.js";
@@ -421,6 +423,31 @@ applicationsRouter.post("/:applicationId/update-check", async (c) => {
   startJob(jobId, "リモートとの差分確認を開始します。");
 
   const repoPath = path.join(env.appsRoot, application.name);
+  if (env.executionMode === "dry-run") {
+    const currentCommit = application.current_commit ?? "dry-run-current";
+    const latestRemoteCommit = `dry-run-remote-${Date.now()}`;
+    const hasUpdate = currentCommit !== latestRemoteCommit;
+
+    upsertUpdateInfoStatement.run(applicationId, currentCommit, latestRemoteCommit, hasUpdate ? 1 : 0, nowIso());
+    finishJob(jobId, "succeeded", hasUpdate ? "更新があります。" : "最新状態です。");
+    recordEvent({
+      scope: "update",
+      applicationId,
+      level: hasUpdate ? "warning" : "info",
+      title: hasUpdate ? "更新があります" : "更新なし",
+      message: hasUpdate
+        ? `remote=${latestRemoteCommit} / current=${currentCommit}`
+        : `最新コミット (${currentCommit}) を確認しました。`
+    });
+
+    return c.json({
+      jobId,
+      hasUpdate,
+      currentCommit,
+      latestRemoteCommit
+    });
+  }
+
   if (!fs.existsSync(repoPath)) {
     const message = `ローカルリポジトリが見つかりません: ${repoPath}`;
     finishJob(jobId, "failed", message);
@@ -443,15 +470,6 @@ applicationsRouter.post("/:applicationId/update-check", async (c) => {
     const hasUpdate = currentCommit !== latestRemoteCommit;
 
     upsertUpdateInfoStatement.run(applicationId, currentCommit, latestRemoteCommit, hasUpdate ? 1 : 0, nowIso());
-    db.prepare(
-      `
-        UPDATE applications
-        SET previous_commit = current_commit,
-            current_commit = ?,
-            updated_at = ?
-        WHERE application_id = ?
-      `
-    ).run(currentCommit, nowIso(), applicationId);
 
     finishJob(jobId, "succeeded", hasUpdate ? "更新があります。" : "最新状態です。");
     recordEvent({
@@ -482,6 +500,56 @@ applicationsRouter.post("/:applicationId/update-check", async (c) => {
     });
     return c.json({ message: "更新確認に失敗しました。", detail: message, jobId }, 500);
   }
+});
+
+applicationsRouter.post("/:applicationId/update", async (c) => {
+  const applicationId = c.req.param("applicationId");
+
+  const application = db
+    .prepare("SELECT name FROM applications WHERE application_id = ?")
+    .get(applicationId) as { name: string } | undefined;
+
+  if (!application) {
+    return c.json({ message: "対象アプリが見つかりません。" }, 404);
+  }
+
+  const jobId = createJob("update", applicationId, "更新適用ジョブを作成しました。");
+  void executeUpdateJob(applicationId, jobId);
+
+  return c.json(
+    {
+      jobId,
+      message: `${application.name} の更新適用ジョブを開始しました。`
+    },
+    202
+  );
+});
+
+applicationsRouter.post("/:applicationId/rollback", async (c) => {
+  const applicationId = c.req.param("applicationId");
+
+  const application = db
+    .prepare("SELECT name, previous_commit FROM applications WHERE application_id = ?")
+    .get(applicationId) as { name: string; previous_commit: string | null } | undefined;
+
+  if (!application) {
+    return c.json({ message: "対象アプリが見つかりません。" }, 404);
+  }
+
+  if (!application.previous_commit) {
+    return c.json({ message: "ロールバック可能な1つ前のコミットがありません。" }, 400);
+  }
+
+  const jobId = createJob("rollback", applicationId, "ロールバックジョブを作成しました。");
+  void executeRollbackJob(applicationId, jobId);
+
+  return c.json(
+    {
+      jobId,
+      message: `${application.name} のロールバックジョブを開始しました。`
+    },
+    202
+  );
 });
 
 applicationsRouter.delete("/:applicationId", async (c) => {

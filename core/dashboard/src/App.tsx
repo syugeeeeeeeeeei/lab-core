@@ -1,13 +1,17 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
+  applyUpdate,
   checkUpdate,
   createApplication,
   deleteApplication,
+  fetchApplicationLogs,
+  fetchApplicationLogServices,
   fetchApplications,
   fetchEvents,
   fetchRegistrationFixtures,
   fetchSystemStatus,
   rebuildApplication,
+  rollbackApplication,
   restartApplication,
   syncInfrastructure
 } from "./api";
@@ -56,6 +60,24 @@ function statusBadgeClass(status: string): string {
   return "badge";
 }
 
+function shortCommit(value: string | null): string {
+  if (!value) {
+    return "未取得";
+  }
+  return value.length > 12 ? value.slice(0, 12) : value;
+}
+
+function logLineClass(line: string): string {
+  const lower = line.toLowerCase();
+  if (lower.includes("error") || lower.includes("failed") || lower.includes("exception")) {
+    return "log-line error";
+  }
+  if (lower.includes("warn")) {
+    return "log-line warning";
+  }
+  return "log-line";
+}
+
 function createFixtureSuffix(): string {
   const now = new Date();
   const y = String(now.getFullYear()).slice(-2);
@@ -90,6 +112,7 @@ function buildFixturePayload(fixture: RegistrationFixture): CreateApplicationPay
 }
 
 export function App() {
+  const logViewerRef = useRef<HTMLDivElement | null>(null);
   const [system, setSystem] = useState<SystemStatus | null>(null);
   const [applications, setApplications] = useState<ApplicationListItem[]>([]);
   const [events, setEvents] = useState<SystemEvent[]>([]);
@@ -100,6 +123,14 @@ export function App() {
   const [deleteTarget, setDeleteTarget] = useState<ApplicationListItem | null>(null);
   const [deleteMode, setDeleteMode] = useState<DeleteMode>("config_only");
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [logTarget, setLogTarget] = useState<ApplicationListItem | null>(null);
+  const [logServices, setLogServices] = useState<string[]>([]);
+  const [selectedLogService, setSelectedLogService] = useState("");
+  const [logTail, setLogTail] = useState(200);
+  const [logLines, setLogLines] = useState<string[]>([]);
+  const [lastLogFetchAt, setLastLogFetchAt] = useState("");
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [autoScrollLogs, setAutoScrollLogs] = useState(true);
   const [loading, setLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -151,6 +182,30 @@ export function App() {
       setSelectedFixtureId(fixtures[0].id);
     }
   }, [fixtures, selectedFixtureId]);
+
+  useEffect(() => {
+    if (!autoScrollLogs) {
+      return;
+    }
+    if (!logViewerRef.current) {
+      return;
+    }
+    logViewerRef.current.scrollTop = logViewerRef.current.scrollHeight;
+  }, [autoScrollLogs, logLines]);
+
+  useEffect(() => {
+    if (!logTarget) {
+      return;
+    }
+    const exists = applications.some((application) => application.application_id === logTarget.application_id);
+    if (!exists) {
+      setLogTarget(null);
+      setLogServices([]);
+      setSelectedLogService("");
+      setLogLines([]);
+      setLastLogFetchAt("");
+    }
+  }, [applications, logTarget]);
 
   async function runAction(task: () => Promise<void>, successMessage: string): Promise<void> {
     setActionMessage("");
@@ -209,6 +264,66 @@ export function App() {
     setDeleteTarget(null);
     setDeleteConfirmText("");
     setDeleteMode("config_only");
+  }
+
+  async function refreshLogs(options: { target?: ApplicationListItem | null; service?: string; tail?: number } = {}): Promise<void> {
+    const target = options.target ?? logTarget;
+    if (!target) {
+      return;
+    }
+
+    const service = options.service ?? selectedLogService;
+    const tail = options.tail ?? logTail;
+
+    setLogsLoading(true);
+    setErrorMessage("");
+    try {
+      const snapshot = await fetchApplicationLogs(target.application_id, {
+        service: service.length > 0 ? service : undefined,
+        tail
+      });
+      setLogLines(snapshot.lines);
+      setLastLogFetchAt(snapshot.fetchedAt);
+      setLogTarget(target);
+      setSelectedLogService(service);
+      setLogTail(tail);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "ログ取得に失敗しました。");
+    } finally {
+      setLogsLoading(false);
+    }
+  }
+
+  async function openLogViewer(application: ApplicationListItem): Promise<void> {
+    setLogTarget(application);
+    setLogServices([]);
+    setSelectedLogService("");
+    setLogTail(200);
+    setLogLines([]);
+    setLastLogFetchAt("");
+    setLogsLoading(true);
+    setErrorMessage("");
+
+    try {
+      const services = await fetchApplicationLogServices(application.application_id);
+      setLogServices(services);
+
+      const defaultService = services.includes(application.public_service_name)
+        ? application.public_service_name
+        : (services[0] ?? "");
+      setSelectedLogService(defaultService);
+
+      const snapshot = await fetchApplicationLogs(application.application_id, {
+        service: defaultService.length > 0 ? defaultService : undefined,
+        tail: 200
+      });
+      setLogLines(snapshot.lines);
+      setLastLogFetchAt(snapshot.fetchedAt);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "ログビューアの初期化に失敗しました。");
+    } finally {
+      setLogsLoading(false);
+    }
   }
 
   return (
@@ -375,6 +490,8 @@ export function App() {
                     <td>
                       <strong>{application.name}</strong>
                       <p>{application.mode === "headless" ? "Headless" : "Standard"}</p>
+                      <p>current: {shortCommit(application.current_commit)}</p>
+                      <p>prev: {shortCommit(application.previous_commit)}</p>
                     </td>
                     <td>
                       <span className={statusBadgeClass(application.status)}>{application.status}</span>
@@ -425,6 +542,39 @@ export function App() {
                         </button>
                         <button
                           type="button"
+                          className="button tiny warn"
+                          onClick={() =>
+                            void runAction(
+                              async () => applyUpdate(application.application_id),
+                              `${application.name} の更新適用ジョブを開始しました。`
+                            )
+                          }
+                        >
+                          更新適用
+                        </button>
+                        <button
+                          type="button"
+                          className="button tiny"
+                          onClick={() =>
+                            void runAction(
+                              async () => rollbackApplication(application.application_id),
+                              `${application.name} のロールバックジョブを開始しました。`
+                            )
+                          }
+                          disabled={!application.previous_commit}
+                          title={!application.previous_commit ? "ロールバック可能な1つ前コミットがありません" : ""}
+                        >
+                          ロールバック
+                        </button>
+                        <button
+                          type="button"
+                          className="button tiny secondary"
+                          onClick={() => void openLogViewer(application)}
+                        >
+                          ログ
+                        </button>
+                        <button
+                          type="button"
                           className="button tiny danger"
                           onClick={() => {
                             setDeleteTarget(application);
@@ -463,6 +613,92 @@ export function App() {
             {sortedEvents.length === 0 ? <li className="event-item">イベントはまだありません。</li> : null}
           </ul>
         </section>
+
+        {logTarget ? (
+          <section className="card logs-card full">
+            <div className="logs-header">
+              <div>
+                <h2>ログ確認: {logTarget.name}</h2>
+                <p className="logs-meta">
+                  最終取得: {lastLogFetchAt.length > 0 ? toLocale(lastLogFetchAt) : "未取得"}
+                </p>
+              </div>
+              <div className="logs-actions">
+                <label>
+                  サービス
+                  <select
+                    value={selectedLogService}
+                    onChange={(event) => {
+                      const nextService = event.target.value;
+                      setSelectedLogService(nextService);
+                      void refreshLogs({ service: nextService });
+                    }}
+                  >
+                    <option value="">全サービス</option>
+                    {logServices.map((service) => (
+                      <option key={service} value={service}>
+                        {service}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  表示行数
+                  <select
+                    value={String(logTail)}
+                    onChange={(event) => {
+                      const nextTail = Number(event.target.value);
+                      setLogTail(nextTail);
+                      void refreshLogs({ tail: nextTail });
+                    }}
+                  >
+                    <option value="100">100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                    <option value="1000">1000</option>
+                  </select>
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={autoScrollLogs}
+                    onChange={(event) => setAutoScrollLogs(event.target.checked)}
+                  />
+                  自動スクロール
+                </label>
+                <button type="button" className="button tiny secondary" onClick={() => void refreshLogs()}>
+                  {logsLoading ? "取得中..." : "ログ更新"}
+                </button>
+                <button
+                  type="button"
+                  className="button tiny"
+                  onClick={() => {
+                    setLogTarget(null);
+                    setLogServices([]);
+                    setSelectedLogService("");
+                    setLogLines([]);
+                    setLastLogFetchAt("");
+                  }}
+                >
+                  閉じる
+                </button>
+              </div>
+            </div>
+            <div className="log-viewer" ref={logViewerRef}>
+              {logLines.length === 0 ? (
+                <p className="log-empty">{logsLoading ? "ログを取得しています..." : "表示できるログがありません。"}</p>
+              ) : (
+                <ul className="log-lines">
+                  {logLines.map((line, index) => (
+                    <li key={`${index}-${line.slice(0, 30)}`} className={logLineClass(line)}>
+                      {line}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+        ) : null}
 
         {deleteTarget ? (
           <section className="card delete-card full">

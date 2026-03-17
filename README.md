@@ -11,3 +11,8 @@
 1. `yarn install`
 2. `yarn dev:backend`
 3. 別ターミナルで `yarn dev:dashboard`
+
+## 検証コマンド
+- ビルド確認: `yarn build`
+- 登録テスト値投入: `yarn test:register-fixtures`
+- 網羅スモークテスト: `yarn test:smoke`
