@@ -58,7 +58,6 @@
 ### CLI から一括登録テスト
 - 3種類を連続で登録する: `yarn test:register-fixtures`
 - 接続先変更（例）: `bash scripts/testing/register_app_fixtures.sh http://127.0.0.1:7300`
-- 網羅スモークテスト（推奨）: `yarn test:smoke`
 
 ## 6. 運用操作
 ### 再起動
@@ -136,11 +135,6 @@
 5. ホスト側で `docker ps` を実行し、対象コンテナが起動していることを確認する
 
 ## 10. ユーザーテスト手順（毎回の確認用）
-### 自動網羅テスト（推奨）
-1. `yarn build`
-2. `yarn test:smoke`
-3. 出力 JSON の `ok: true` と `checkedCount` を確認
-
 ### テストA: 基本起動
 1. `yarn install`
 2. `yarn dev:backend`

@@ -9,6 +9,7 @@ node_modules/
 dist/
 coverage/
 core/backend/data/*.sqlite
+core/backend/data/*.sqlite-*
 core/backend/data/*.db
 core/backend/data/generated/
 archive/extracted/
