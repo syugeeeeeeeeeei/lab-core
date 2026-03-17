@@ -1,0 +1,15 @@
+node_modules/
+.yarn/
+.pnp.*
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+dist/
+coverage/
+core/backend/data/*.sqlite
+core/backend/data/*.db
+core/backend/data/generated/
+archive/extracted/
+runtime/

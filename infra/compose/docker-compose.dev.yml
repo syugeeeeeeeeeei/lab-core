@@ -1,0 +1,28 @@
+services:
+  backend:
+    image: node:20-alpine
+    working_dir: /workspace
+    command: sh -lc "yarn install && yarn dev:backend"
+    volumes:
+      - ../../:/workspace
+    environment:
+      LAB_CORE_PORT: "7300"
+      LAB_CORE_DB_PATH: "/workspace/core/backend/data/database.sqlite"
+      LAB_CORE_APPS_ROOT: "/workspace/runtime/apps"
+      LAB_CORE_APPDATA_ROOT: "/workspace/runtime/appdata"
+      LAB_CORE_PROXY_CONFIG_PATH: "/workspace/core/backend/data/generated/Caddyfile"
+      LAB_CORE_DNS_HOSTS_PATH: "/workspace/core/backend/data/generated/fukaya-sus.hosts"
+      LAB_CORE_SYNC_DIR: "/workspace/core/backend/data/generated"
+    ports:
+      - "7300:7300"
+
+  dashboard:
+    image: node:20-alpine
+    working_dir: /workspace
+    command: sh -lc "yarn install && yarn dev:dashboard"
+    volumes:
+      - ../../:/workspace
+    depends_on:
+      - backend
+    ports:
+      - "5173:5173"

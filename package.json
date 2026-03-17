@@ -1,0 +1,16 @@
+{
+  "name": "lab-core",
+  "private": true,
+  "packageManager": "yarn@1.22.22",
+  "workspaces": [
+    "core/backend",
+    "core/dashboard"
+  ],
+  "scripts": {
+    "dev": "yarn dev:backend",
+    "dev:backend": "yarn workspace @lab-core/backend dev",
+    "dev:dashboard": "yarn workspace @lab-core/dashboard dev",
+    "build": "yarn workspace @lab-core/backend build && yarn workspace @lab-core/dashboard build",
+    "test:register-fixtures": "bash scripts/testing/register_app_fixtures.sh"
+  }
+}
