@@ -1,0 +1,21 @@
+# ローカルドメイン用の設定ブロック
+fukaya-sus.lab:53 {
+    hosts {
+        # ブラウザに教えるべきCaddyの宛先は、ホストPCのlocalhost
+        # 環境変数 ($SSH_IP, $HOST_IP) を参照するように変更
+        {$SSH_IP} ssh.fukaya-sus.lab
+        {$HOST_IP} dns.fukaya-sus.lab 
+        fallthrough
+    }
+    # AdGuard (172.20.0.11) に転送
+    forward . 172.20.0.11:53
+    errors
+}
+
+# 上記以外すべてをAdGuard Homeに転送する設定ブロック
+.:53 {
+    # CoreDNSからAdGuard Homeへの通信は内部IPで行うので、ここは変更しない
+    forward . 172.20.0.11:53 
+    cache 30
+    errors
+}
