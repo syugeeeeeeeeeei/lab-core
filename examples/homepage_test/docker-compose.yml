@@ -1,0 +1,8 @@
+services:
+  homepage-test:
+    build:
+      context: .
+    container_name: homepage-test
+    expose:
+      - "8080"
+    restart: unless-stopped

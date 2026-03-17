@@ -13,6 +13,9 @@ set -a
 source "${ENV_FILE}"
 set +a
 
+: "${DNS_HOST_PORT:=5353}"
+: "${DNS_BIND_IP:=0.0.0.0}"
+
 SUDO=""
 if [[ "${EUID}" -ne 0 ]]; then
   if command -v sudo >/dev/null 2>&1; then
@@ -70,6 +73,56 @@ prepare_docker_command() {
   fi
 }
 
+validate_dns_settings() {
+  if ! [[ "${DNS_HOST_PORT}" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: DNS_HOST_PORT は数字で指定してください: ${DNS_HOST_PORT}" >&2
+    exit 1
+  fi
+
+  if (( DNS_HOST_PORT < 1 || DNS_HOST_PORT > 65535 )); then
+    echo "ERROR: DNS_HOST_PORT は 1-65535 の範囲で指定してください: ${DNS_HOST_PORT}" >&2
+    exit 1
+  fi
+}
+
+is_port_in_use() {
+  local port="$1"
+
+  if command -v ss >/dev/null 2>&1; then
+    if run_root ss -H -ltnup 2>/dev/null | awk -v p=":${port}" '$5 ~ p"$" {found=1} END {exit found ? 0 : 1}'; then
+      return 0
+    fi
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    if run_root lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+      return 0
+    fi
+    if run_root lsof -nP -iUDP:"${port}" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+check_dns_port_conflict() {
+  if [[ "${DNS_HOST_PORT}" != "53" ]]; then
+    echo "[setup] DNS はホストポート ${DNS_HOST_PORT} で公開します（暫定運用）。"
+    return
+  fi
+
+  echo "[setup] DNS 53番ポートの競合を確認します。"
+  if is_port_in_use 53; then
+    cat <<EOF >&2
+ERROR: ホストの 53 番ポートが既に使用中です。
+  - 53 番を利用する場合は、競合している DNS サービスを停止してください。
+  - 暫定運用する場合は .env の DNS_HOST_PORT=5353 を利用してください。
+EOF
+    exit 1
+  fi
+}
+
 ensure_prerequisites() {
   run_root systemctl enable --now docker
   mkdir -p "${SCRIPT_DIR}/dnsmasq" "${SCRIPT_DIR}/data/npm" "${SCRIPT_DIR}/data/letsencrypt" "${SCRIPT_DIR}/data/dockge" "${SCRIPT_DIR}/stacks"
@@ -107,13 +160,16 @@ print_summary() {
 [done] Lab-Core の起動が完了しました。
   - Nginx Proxy Manager: http://${SERVER_IP}:${NPM_ADMIN_PORT}
   - Dockge: http://${SERVER_IP}:${DOCKGE_PORT}
-  - DNS wildcard: *.${LAB_DOMAIN} -> ${SERVER_IP}
+  - DNS wildcard: *.${LAB_DOMAIN} -> ${SERVER_IP} (query port: ${DNS_HOST_PORT})
+  - DNS test: dig @${SERVER_IP} -p ${DNS_HOST_PORT} test.${LAB_DOMAIN}
 EOF
 }
 
 install_docker_if_needed
 prepare_docker_command
+validate_dns_settings
 ensure_prerequisites
+check_dns_port_conflict
 generate_dns_config
 ensure_bridge_network
 start_stack

@@ -2,7 +2,7 @@ name: lab-core
 
 services:
   dnsmasq:
-    image: andyshinn/dnsmasq:2.86
+    image: strm/dnsmasq:latest
     container_name: lab-dnsmasq
     cap_add:
       - NET_ADMIN
@@ -11,14 +11,14 @@ services:
       - --log-facility=-
       - --conf-file=/etc/dnsmasq.d/lab.conf
     ports:
-      - "53:53/udp"
-      - "53:53/tcp"
+      - "${DNS_BIND_IP:-0.0.0.0}:${DNS_HOST_PORT:-5353}:53/udp"
+      - "${DNS_BIND_IP:-0.0.0.0}:${DNS_HOST_PORT:-5353}:53/tcp"
     volumes:
       - ./dnsmasq/lab.conf:/etc/dnsmasq.d/lab.conf:ro
     restart: unless-stopped
 
   npm:
-    image: jc21/nginx-proxy-manager:2.12.3
+    image: jc21/nginx-proxy-manager:2.14.0
     container_name: lab-npm
     ports:
       - "${NPM_HTTP_PORT:-80}:80"

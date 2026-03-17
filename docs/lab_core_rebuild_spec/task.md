@@ -6,3 +6,4 @@
 - [x] `manager/` に Lab-Wire（TypeScript）を実装
 - [x] 生成物・実行時データを管理する `.gitignore` を追加
 - [x] 本ドキュメント群を `docs/lab_core_rebuild_spec/` に保存
+- [x] DNS 53番ポート競合対策として `DNS_HOST_PORT` を追加し、暫定 `5353` 運用を導入
