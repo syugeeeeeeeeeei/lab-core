@@ -21,3 +21,7 @@
 ## 設定コマンド
 - 設定を対話形式で作成: `yarn config:init`
 - 設定を安全に再作成: `yarn config:reset`
+
+## ドキュメント
+- 総合ドキュメント入口: `docs/lab_core_system_documentation/index.md`
+- 既存の操作説明書: `docs/readmes/how_to_use_lab_core.md`
