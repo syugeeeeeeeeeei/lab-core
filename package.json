@@ -12,6 +12,8 @@
     "dev:dashboard": "yarn workspace @lab-core/dashboard dev",
     "build": "yarn workspace @lab-core/backend build && yarn workspace @lab-core/dashboard build",
     "test:register-fixtures": "bash scripts/testing/register_app_fixtures.sh",
-    "test:smoke": "bash scripts/testing/run_full_system_smoke_test.sh"
+    "test:smoke": "bash scripts/testing/run_full_system_smoke_test.sh",
+    "config:init": "node scripts/config/env-wizard.mjs init",
+    "config:reset": "node scripts/config/env-wizard.mjs reset"
   }
 }

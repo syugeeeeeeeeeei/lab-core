@@ -5,9 +5,14 @@
 
 ## 2. 開発環境の起動
 1. リポジトリルートで `yarn install`
-2. バックエンド起動: `yarn dev:backend`
-3. ダッシュボード起動: `yarn dev:dashboard`
-4. ブラウザで `http://localhost:5173` を開く
+2. 対話型設定: `yarn config:init`
+3. バックエンド起動: `yarn dev:backend`
+4. ダッシュボード起動: `yarn dev:dashboard`
+5. ブラウザで `http://localhost:5173` を開く
+
+補足:
+- backend は `core/backend/.env` を起動時に自動読込します。
+- 設定を初期化したい場合は `yarn config:reset` を使用してください。
 
 ## 3. 画面の見方
 - `登録アプリ`: 現在登録済みのアプリ数
@@ -58,6 +63,7 @@
 ### CLI から一括登録テスト
 - 3種類を連続で登録する: `yarn test:register-fixtures`
 - 接続先変更（例）: `bash scripts/testing/register_app_fixtures.sh http://127.0.0.1:7300`
+- 網羅スモークテスト（推奨）: `yarn test:smoke`
 
 ## 6. 運用操作
 ### 再起動
@@ -126,6 +132,17 @@
 - `LAB_CORE_EXECUTION_MODE=execute`
 - `LAB_CORE_APPS_ROOT=./runtime/apps`
 - `LAB_CORE_APPDATA_ROOT=./runtime/appdata`
+
+### 設定ファイルを安全に作る方法（推奨）
+1. `yarn config:init` を実行
+2. プロファイル（local/lab/vm）を選択
+3. 各項目の説明を読み、必要なら値を変更
+4. 保存確認で `yes` を入力
+
+`yarn config:init` / `yarn config:reset` の特徴:
+- すべての項目に「用途」「役割」「設定例」の説明が表示されます
+- Enter だけで推奨値を採用できます
+- 上書き時は `core/backend/.env.backup.<timestamp>` を自動作成します
 
 ### 実コンテナ起動の確認手順（execute）
 1. `core/backend/.env.example` を基に `.env` を作り、`LAB_CORE_EXECUTION_MODE=execute` に設定する

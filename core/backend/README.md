@@ -40,4 +40,9 @@
 
 ## 開発
 1. `yarn install`
-2. `yarn workspace @lab-core/backend dev`
+2. ルートで `yarn config:init`（`core/backend/.env` を対話生成）
+3. `yarn workspace @lab-core/backend dev`
+
+## .env 読込
+- backend 起動時に `core/backend/.env` を自動読込します
+- 既存の OS 環境変数がある場合は、そちらを優先します
