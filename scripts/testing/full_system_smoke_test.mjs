@@ -118,6 +118,7 @@ async function main() {
 
   const system = await requestJson("GET", "/api/system/status");
   assert(system.execution?.mode === "dry-run" || system.execution?.mode === "execute", "execution mode not found");
+  const rootDomain = system.execution?.rootDomain ?? "lab.localhost";
   summary.checked.push("system-status");
 
   const fixtureResponse = await requestJson("GET", "/api/testing/registration-fixtures");
@@ -179,7 +180,7 @@ async function main() {
   const caddyFile = await fs.readFile(caddyPath, "utf8");
   const dnsFile = await fs.readFile(dnsPath, "utf8");
   assert(caddyFile.includes(appA.hostname), "Caddyfile does not include appA hostname");
-  assert(dnsFile.includes("fukaya-sus.lab"), "dns hosts file is not generated");
+  assert(dnsFile.includes(rootDomain), "dns hosts file is not generated");
   summary.checked.push("infra-sync");
 
   const suffixB = uniqueSuffix();

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { db, nowIso } from "../lib/db.js";
 import { env } from "../lib/env.js";
+import { dnsServer } from "../services/dns-server.js";
 
 export const systemRouter = new Hono();
 
@@ -66,6 +67,7 @@ systemRouter.get("/status", (c) => {
       mainServiceIp: env.mainServiceIp,
       sshServiceIp: env.sshServiceIp,
       rootDomain: env.rootDomain
-    }
+    },
+    dnsServer: dnsServer.getStatus()
   });
 });

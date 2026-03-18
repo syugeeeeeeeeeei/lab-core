@@ -543,6 +543,7 @@ export function App() {
           deviceRequirementsRaw={deviceRequirementsRaw}
           resolveState={resolveState}
           composeState={composeState}
+          rootDomain={system?.execution?.rootDomain ?? "lab.localhost"}
           loading={busy}
           onFieldChange={onFormFieldChange}
           onDeviceRequirementsChange={setDeviceRequirementsRaw}

@@ -37,6 +37,7 @@ type ImportViewProps = {
   deviceRequirementsRaw: string;
   resolveState: ImportResolveState;
   composeState: ImportComposeState;
+  rootDomain: string;
   loading: boolean;
   onFieldChange: <K extends keyof ImportFormState>(key: K, value: ImportFormState[K]) => void;
   onDeviceRequirementsChange: (value: string) => void;
@@ -52,6 +53,7 @@ export function ImportView(props: ImportViewProps) {
     deviceRequirementsRaw,
     resolveState,
     composeState,
+    rootDomain,
     loading,
     onFieldChange,
     onDeviceRequirementsChange,
@@ -273,7 +275,7 @@ export function ImportView(props: ImportViewProps) {
                   サブドメイン
                   <input
                     required
-                    placeholder="xxx.fukaya-sus.lab"
+                    placeholder={`app.${rootDomain}`}
                     value={form.hostname}
                     onChange={(event) => onFieldChange("hostname", event.target.value)}
                   />
@@ -327,6 +329,11 @@ export function ImportView(props: ImportViewProps) {
                   onChange={(event) => onDeviceRequirementsChange(event.target.value)}
                 />
               </label>
+
+              <p className="hint">
+                現在の設定ドメインは <code>{rootDomain}</code> です。別ドメインも登録できますが、
+                その場合は DNS または hosts で名前解決できるようにしてください。
+              </p>
 
               <button type="submit" className="button primary" disabled={loading}>
                 登録して配備キューに追加

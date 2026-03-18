@@ -199,6 +199,8 @@
 - 出力:
   `core/backend/data/generated/Caddyfile`
   `core/backend/data/generated/fukaya-sus.hosts`
+- 関連:
+  backend 起動中は内蔵 DNS サーバーがこの hosts を参照して応答できる
 
 ## 17. 自動更新と通知
 

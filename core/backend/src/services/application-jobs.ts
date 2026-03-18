@@ -5,6 +5,7 @@ import { db, nowIso } from "../lib/db.js";
 import { env } from "../lib/env.js";
 import type { JobStatus } from "../types.js";
 import { runCommand } from "./command-runner.js";
+import { buildComposeProjectName } from "./compose-project.js";
 import { recordEvent } from "./events.js";
 import { finishJob, setJobProgress, startJob } from "./jobs.js";
 import { syncInfrastructure } from "./infrastructure-sync.js";
@@ -181,16 +182,23 @@ async function ensureRepository(app: AppDeploymentRow): Promise<{ repoPath: stri
   return { repoPath, headCommit };
 }
 
-async function runComposeUp(repoPath: string, composeFilePath: string): Promise<void> {
-  await runCommand("docker", ["compose", "-f", composeFilePath, "up", "-d", "--build"], { cwd: repoPath });
+async function runComposeUp(repoPath: string, composeFilePath: string, composeProjectName: string): Promise<void> {
+  await runCommand("docker", ["compose", "-p", composeProjectName, "-f", composeFilePath, "up", "-d", "--build"], {
+    cwd: repoPath
+  });
 }
 
-async function runComposeRestart(repoPath: string, composeFilePath: string): Promise<void> {
-  await runCommand("docker", ["compose", "-f", composeFilePath, "restart"], { cwd: repoPath });
+async function runComposeRestart(repoPath: string, composeFilePath: string, composeProjectName: string): Promise<void> {
+  await runCommand("docker", ["compose", "-p", composeProjectName, "-f", composeFilePath, "restart"], { cwd: repoPath });
 }
 
-async function runComposeDown(repoPath: string, composeFilePath: string, keepData: boolean): Promise<void> {
-  const args = ["compose", "-f", composeFilePath, "down"];
+async function runComposeDown(
+  repoPath: string,
+  composeFilePath: string,
+  composeProjectName: string,
+  keepData: boolean
+): Promise<void> {
+  const args = ["compose", "-p", composeProjectName, "-f", composeFilePath, "down"];
   if (!keepData) {
     args.push("-v");
   }
@@ -213,6 +221,7 @@ function recordDeployProgress(applicationId: string, title: string, message: str
 
 export async function executeDeployJob(applicationId: string, jobId: string): Promise<void> {
   const app = getAppDeployment(applicationId);
+  const composeProjectName = buildComposeProjectName(app.application_id, app.name);
   startJob(jobId, "deploy ジョブを開始しました。");
 
   try {
@@ -227,8 +236,12 @@ export async function executeDeployJob(applicationId: string, jobId: string): Pr
     recordDeployProgress(applicationId, "リポジトリ取得が完了しました", `commit ${headCommit} を取得しました。`);
     const composeFilePath = path.resolve(repoPath, app.compose_path);
     setJobProgress(jobId, `docker compose を起動しています。compose=${app.compose_path}`);
-    recordDeployProgress(applicationId, "コンテナを起動しています", `docker compose -f ${composeFilePath} up -d --build を実行しています。`);
-    await runComposeUp(repoPath, composeFilePath);
+    recordDeployProgress(
+      applicationId,
+      "コンテナを起動しています",
+      `docker compose -p ${composeProjectName} -f ${composeFilePath} up -d --build を実行しています。`
+    );
+    await runComposeUp(repoPath, composeFilePath, composeProjectName);
 
     setJobProgress(jobId, "公開ルートとインフラ設定を同期しています。");
     recordDeployProgress(applicationId, "公開設定を同期しています", `アプリ ${app.name} の DNS / Proxy 設定を反映しています。`);
@@ -259,6 +272,7 @@ export async function executeDeployJob(applicationId: string, jobId: string): Pr
 
 export async function executeUpdateJob(applicationId: string, jobId: string): Promise<void> {
   const app = getAppDeployment(applicationId);
+  const composeProjectName = buildComposeProjectName(app.application_id, app.name);
   startJob(jobId, "update ジョブを開始しました。");
 
   try {
@@ -295,7 +309,7 @@ export async function executeUpdateJob(applicationId: string, jobId: string): Pr
     const afterCommit = (await git.revparse(["HEAD"])).trim();
 
     const composeFilePath = path.resolve(repoPath, app.compose_path);
-    await runComposeUp(repoPath, composeFilePath);
+    await runComposeUp(repoPath, composeFilePath, composeProjectName);
 
     setCommitPair(applicationId, afterCommit, beforeCommit);
     upsertUpdateInfo(applicationId, afterCommit, afterCommit, false);
@@ -329,6 +343,7 @@ export async function executeUpdateJob(applicationId: string, jobId: string): Pr
 
 export async function executeRollbackJob(applicationId: string, jobId: string): Promise<void> {
   const app = getAppDeployment(applicationId);
+  const composeProjectName = buildComposeProjectName(app.application_id, app.name);
   startJob(jobId, "rollback ジョブを開始しました。");
 
   try {
@@ -367,7 +382,7 @@ export async function executeRollbackJob(applicationId: string, jobId: string): 
     await git.checkout(rollbackTarget);
 
     const composeFilePath = path.resolve(repoPath, app.compose_path);
-    await runComposeUp(repoPath, composeFilePath);
+    await runComposeUp(repoPath, composeFilePath, composeProjectName);
 
     const remoteHead = (await git.revparse([`origin/${app.default_branch}`])).trim();
     const nextPrevious = currentCommit ?? remoteHead;
@@ -401,6 +416,7 @@ export async function executeRollbackJob(applicationId: string, jobId: string): 
 
 export async function executeRebuildJob(applicationId: string, jobId: string, keepData: boolean): Promise<void> {
   const app = getAppDeployment(applicationId);
+  const composeProjectName = buildComposeProjectName(app.application_id, app.name);
   startJob(jobId, "rebuild ジョブを開始しました。");
 
   try {
@@ -420,8 +436,8 @@ export async function executeRebuildJob(applicationId: string, jobId: string, ke
     ).run(keepData ? 1 : 0, applicationId);
 
     const composeFilePath = path.resolve(repoPath, app.compose_path);
-    await runComposeDown(repoPath, composeFilePath, keepData);
-    await runComposeUp(repoPath, composeFilePath);
+    await runComposeDown(repoPath, composeFilePath, composeProjectName, keepData);
+    await runComposeUp(repoPath, composeFilePath, composeProjectName);
 
     setAppStatus(applicationId, "Running");
     syncInfrastructure(`rebuild:${app.name}`);
@@ -450,6 +466,7 @@ export async function executeRebuildJob(applicationId: string, jobId: string, ke
 
 export async function executeRestartJob(applicationId: string, jobId: string): Promise<void> {
   const app = getAppDeployment(applicationId);
+  const composeProjectName = buildComposeProjectName(app.application_id, app.name);
   startJob(jobId, "restart ジョブを開始しました。");
 
   try {
@@ -461,7 +478,7 @@ export async function executeRestartJob(applicationId: string, jobId: string): P
     }
 
     const composeFilePath = path.resolve(repoPath, app.compose_path);
-    await runComposeRestart(repoPath, composeFilePath);
+    await runComposeRestart(repoPath, composeFilePath, composeProjectName);
 
     setAppStatus(applicationId, "Running");
     completeJob(jobId, "succeeded", "restart 完了");
@@ -492,6 +509,7 @@ type DeleteMode = "config_only" | "source_and_config" | "full";
 
 export async function executeDeleteJob(applicationId: string, jobId: string, mode: DeleteMode): Promise<void> {
   const app = getAppDeployment(applicationId);
+  const composeProjectName = buildComposeProjectName(app.application_id, app.name);
   startJob(jobId, "delete ジョブを開始しました。");
 
   try {
@@ -502,7 +520,7 @@ export async function executeDeleteJob(applicationId: string, jobId: string, mod
 
     if (fs.existsSync(repoPath)) {
       const composeFilePath = path.resolve(repoPath, app.compose_path);
-      await runComposeDown(repoPath, composeFilePath, mode !== "full");
+      await runComposeDown(repoPath, composeFilePath, composeProjectName, mode !== "full");
     }
 
     if (mode === "source_and_config" || mode === "full") {

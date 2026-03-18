@@ -13,8 +13,13 @@ services:
       LAB_CORE_PROXY_CONFIG_PATH: "/workspace/core/backend/data/generated/Caddyfile"
       LAB_CORE_DNS_HOSTS_PATH: "/workspace/core/backend/data/generated/fukaya-sus.hosts"
       LAB_CORE_SYNC_DIR: "/workspace/core/backend/data/generated"
+      LAB_CORE_DNS_SERVER_ENABLED: "true"
+      LAB_CORE_DNS_BIND_HOST: "0.0.0.0"
+      LAB_CORE_DNS_PORT: "53"
     ports:
       - "7300:7300"
+      - "53:53/tcp"
+      - "53:53/udp"
 
   dashboard:
     image: node:20-alpine

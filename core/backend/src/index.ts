@@ -11,6 +11,7 @@ import { jobsRouter } from "./routes/jobs.js";
 import { logsRouter } from "./routes/logs.js";
 import { systemRouter } from "./routes/system.js";
 import { testingRouter } from "./routes/testing.js";
+import { dnsServer } from "./services/dns-server.js";
 import { recordEvent } from "./services/events.js";
 
 const app = new Hono();
@@ -49,6 +50,8 @@ if (currentEventCount === 0) {
     message: "バックエンドが初回起動しました。"
   });
 }
+
+void dnsServer.start();
 
 serve(
   {

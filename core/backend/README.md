@@ -2,6 +2,7 @@
 
 ## 実装済み範囲
 - Hono ベースの API サーバー
+- 同期生成 hosts を使う内蔵 DNS サーバー（A/AAAA 応答 + upstream 転送）
 - SQLite スキーマ初期化
 - Application / Deployment / Route / Event / Job モデル
 - 再起動・再ビルド・更新確認 API の最小フロー
@@ -37,6 +38,13 @@
 ## 生成ファイル
 - `LAB_CORE_PROXY_CONFIG_PATH`: 同期時に生成する Caddy 設定
 - `LAB_CORE_DNS_HOSTS_PATH`: 同期時に生成する DNS hosts
+
+## DNS サーバー
+- `LAB_CORE_DNS_SERVER_ENABLED=true` で起動
+- `LAB_CORE_DNS_BIND_HOST`, `LAB_CORE_DNS_PORT` で待受先を指定
+- 未知の名前は `LAB_CORE_DNS_UPSTREAMS` または `/etc/resolv.conf` の upstream に転送
+- `53` 番ポートは権限が必要な場合があります
+- 開発で `127.0.0.1:53` を使う場合は、権限付きで backend を起動するか `infra/compose/docker-compose.dev.yml` を使ってください
 
 ## 開発
 1. `yarn install`

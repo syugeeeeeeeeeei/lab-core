@@ -105,6 +105,9 @@ DNS/Proxy 生成ファイル再同期
 - DNS 生成:
 `ssh.<rootDomain>` は `LAB_CORE_SSH_SERVICE_IP`
 各 route host は `LAB_CORE_MAIN_SERVICE_IP`
+- 内蔵 DNS:
+`LAB_CORE_DNS_SERVER_ENABLED=true` の場合、backend が `LAB_CORE_DNS_BIND_HOST:LAB_CORE_DNS_PORT` で DNS を待ち受ける
+生成済み hosts を権威データとして返し、それ以外は upstream へ転送する
 
 ## 8. 設定仕様（.env）
 主要値:
@@ -112,8 +115,8 @@ DNS/Proxy 生成ファイル再同期
 - 経路: `LAB_CORE_APPS_ROOT`, `LAB_CORE_APPDATA_ROOT`
 - ネットワーク: `LAB_CORE_MAIN_SERVICE_IP`, `LAB_CORE_SSH_SERVICE_IP`, `LAB_CORE_ROOT_DOMAIN`
 - 生成物: `LAB_CORE_PROXY_CONFIG_PATH`, `LAB_CORE_DNS_HOSTS_PATH`, `LAB_CORE_SYNC_DIR`
+- DNS サーバー: `LAB_CORE_DNS_SERVER_ENABLED`, `LAB_CORE_DNS_BIND_HOST`, `LAB_CORE_DNS_PORT`, `LAB_CORE_DNS_UPSTREAMS`
 
 運用推奨:
 - 手編集ではなく `yarn config:init` / `yarn config:reset` を使用
 - backend は `core/backend/.env` を起動時自動読込
-

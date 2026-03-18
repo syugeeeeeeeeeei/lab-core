@@ -18,6 +18,8 @@ export function HomeView(props: HomeViewProps) {
     .slice(0, 30);
 
   const recentEvents = [...events].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 30);
+  const dnsStatus = system?.dnsServer;
+  const dnsListening = Boolean(dnsStatus?.udpListening || dnsStatus?.tcpListening);
 
   return (
     <div className="view-grid home-view">
@@ -54,6 +56,17 @@ export function HomeView(props: HomeViewProps) {
           <button type="button" className="button primary" onClick={onOpenImport}>
             アプリ登録へ
           </button>
+        </article>
+        <article className="quick-card">
+          <h2>DNS サーバー</h2>
+          <p>
+            {dnsStatus?.enabled
+              ? dnsListening
+                ? `待受中: ${dnsStatus.bindHost}:${dnsStatus.port}`
+                : `起動失敗: ${dnsStatus.lastError ?? "状態不明"}`
+              : "無効化されています。"}
+          </p>
+          {dnsStatus?.enabled ? <p>hosts: {dnsStatus.hostsFilePath}</p> : null}
         </article>
       </section>
 

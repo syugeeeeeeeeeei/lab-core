@@ -26,7 +26,11 @@ const presets = {
       LAB_CORE_ROOT_DOMAIN: "lab.localhost",
       LAB_CORE_PROXY_CONFIG_PATH: "./core/backend/data/generated/Caddyfile",
       LAB_CORE_DNS_HOSTS_PATH: "./core/backend/data/generated/fukaya-sus.hosts",
-      LAB_CORE_SYNC_DIR: "./core/backend/data/generated"
+      LAB_CORE_SYNC_DIR: "./core/backend/data/generated",
+      LAB_CORE_DNS_SERVER_ENABLED: "true",
+      LAB_CORE_DNS_BIND_HOST: "127.0.0.1",
+      LAB_CORE_DNS_PORT: "53",
+      LAB_CORE_DNS_UPSTREAMS: ""
     }
   },
   lab: {
@@ -43,7 +47,11 @@ const presets = {
       LAB_CORE_ROOT_DOMAIN: "fukaya-sus.lab",
       LAB_CORE_PROXY_CONFIG_PATH: "/opt/lab-core/core/proxy/Caddyfile.generated",
       LAB_CORE_DNS_HOSTS_PATH: "/opt/lab-core/core/dns/fukaya-sus.hosts.generated",
-      LAB_CORE_SYNC_DIR: "/opt/lab-core/core/generated"
+      LAB_CORE_SYNC_DIR: "/opt/lab-core/core/generated",
+      LAB_CORE_DNS_SERVER_ENABLED: "true",
+      LAB_CORE_DNS_BIND_HOST: "0.0.0.0",
+      LAB_CORE_DNS_PORT: "53",
+      LAB_CORE_DNS_UPSTREAMS: ""
     }
   },
   vm: {
@@ -60,7 +68,11 @@ const presets = {
       LAB_CORE_ROOT_DOMAIN: "fukaya-sus.lab",
       LAB_CORE_PROXY_CONFIG_PATH: "./core/backend/data/generated/Caddyfile",
       LAB_CORE_DNS_HOSTS_PATH: "./core/backend/data/generated/fukaya-sus.hosts",
-      LAB_CORE_SYNC_DIR: "./core/backend/data/generated"
+      LAB_CORE_SYNC_DIR: "./core/backend/data/generated",
+      LAB_CORE_DNS_SERVER_ENABLED: "true",
+      LAB_CORE_DNS_BIND_HOST: "0.0.0.0",
+      LAB_CORE_DNS_PORT: "53",
+      LAB_CORE_DNS_UPSTREAMS: ""
     }
   }
 };
@@ -164,6 +176,41 @@ const fieldDefinitions = [
       "この項目は、同期生成ファイルをまとめて管理する機能に使われている、生成物ルートという役割を持つディレクトリを決定するための設定です。設定例: ./core/backend/data/generated, /opt/lab-core/core/generated",
     validate: (value) => value.trim().length > 0,
     error: "空ではないパスを入力してください。"
+  },
+  {
+    key: "LAB_CORE_DNS_SERVER_ENABLED",
+    label: "内蔵DNS起動",
+    explanation:
+      "この項目は、Lab-Core 自身が DNS サーバーとして待ち受ける機能に使われている、DNS サーバー有効化という役割を持つ ON/OFF を決定するための設定です。設定例: true, false",
+    validate: (value) => ["true", "false"].includes(value.trim().toLowerCase()),
+    error: "true または false を入力してください。"
+  },
+  {
+    key: "LAB_CORE_DNS_BIND_HOST",
+    label: "DNS bind host",
+    explanation:
+      "この項目は、内蔵 DNS サーバーがどのアドレスで待ち受けるかを決める機能に使われている、DNS bind host という役割を持つ待受IPを決定するための設定です。設定例: 127.0.0.1, 0.0.0.0",
+    validate: (value) => value.trim().length > 0,
+    error: "空ではない値を入力してください。"
+  },
+  {
+    key: "LAB_CORE_DNS_PORT",
+    label: "DNS待受ポート",
+    explanation:
+      "この項目は、内蔵 DNS サーバーの待受ポートを決める機能に使われている、DNS待受ポートという役割を持つ値の番号を決定するための設定です。設定例: 53, 1053",
+    validate: (value) => {
+      const num = Number(value);
+      return Number.isInteger(num) && num >= 1 && num <= 65535;
+    },
+    error: "1〜65535 の整数を入力してください。"
+  },
+  {
+    key: "LAB_CORE_DNS_UPSTREAMS",
+    label: "DNS upstream",
+    explanation:
+      "この項目は、内蔵 DNS サーバーが不明なドメインを上位 DNS へ転送する機能に使われている、upstream DNS 一覧という役割を持つ問い合わせ先を決定するための設定です。空欄にすると自動検出を試みます。設定例: 1.1.1.1,8.8.8.8",
+    validate: () => true,
+    error: ""
   }
 ];
 
@@ -231,6 +278,10 @@ LAB_CORE_ROOT_DOMAIN=${values.LAB_CORE_ROOT_DOMAIN}
 LAB_CORE_PROXY_CONFIG_PATH=${values.LAB_CORE_PROXY_CONFIG_PATH}
 LAB_CORE_DNS_HOSTS_PATH=${values.LAB_CORE_DNS_HOSTS_PATH}
 LAB_CORE_SYNC_DIR=${values.LAB_CORE_SYNC_DIR}
+LAB_CORE_DNS_SERVER_ENABLED=${values.LAB_CORE_DNS_SERVER_ENABLED}
+LAB_CORE_DNS_BIND_HOST=${values.LAB_CORE_DNS_BIND_HOST}
+LAB_CORE_DNS_PORT=${values.LAB_CORE_DNS_PORT}
+LAB_CORE_DNS_UPSTREAMS=${values.LAB_CORE_DNS_UPSTREAMS}
 `;
 }
 

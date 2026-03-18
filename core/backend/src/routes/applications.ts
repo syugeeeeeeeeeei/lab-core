@@ -1104,6 +1104,7 @@ applicationsRouter.post("/", async (c) => {
   }
 
   const data = parsed.data;
+
   let normalizedImportInput: { repositoryUrl: string; defaultBranch: string };
   try {
     normalizedImportInput = normalizeCreateImportInput(data.repositoryUrl, data.defaultBranch);

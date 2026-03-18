@@ -73,6 +73,32 @@ function toExecutionMode(value: string | undefined): "dry-run" | "execute" {
   return "dry-run";
 }
 
+function toBoolean(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  return !["0", "false", "no", "off"].includes(value.trim().toLowerCase());
+}
+
+function toPort(value: string | undefined, defaultValue: number): number {
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535) {
+    return parsed;
+  }
+  return defaultValue;
+}
+
+function toCsvList(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+}
+
 export const env = {
   port: Number(process.env.LAB_CORE_PORT ?? 7300),
   dbPath: toAbsolutePath(baseDir, process.env.LAB_CORE_DB_PATH ?? "./core/backend/data/database.sqlite"),
@@ -91,5 +117,9 @@ export const env = {
     baseDir,
     process.env.LAB_CORE_DNS_HOSTS_PATH ?? "./core/backend/data/generated/fukaya-sus.hosts"
   ),
-  generatedSyncDir: toAbsolutePath(baseDir, process.env.LAB_CORE_SYNC_DIR ?? "./core/backend/data/generated")
+  generatedSyncDir: toAbsolutePath(baseDir, process.env.LAB_CORE_SYNC_DIR ?? "./core/backend/data/generated"),
+  dnsServerEnabled: toBoolean(process.env.LAB_CORE_DNS_SERVER_ENABLED, true),
+  dnsBindHost: process.env.LAB_CORE_DNS_BIND_HOST ?? "127.0.0.1",
+  dnsPort: toPort(process.env.LAB_CORE_DNS_PORT, 53),
+  dnsUpstreams: toCsvList(process.env.LAB_CORE_DNS_UPSTREAMS)
 };

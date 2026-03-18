@@ -16,6 +16,16 @@ export type SystemStatus = {
     sshServiceIp: string;
     rootDomain: string;
   };
+  dnsServer?: {
+    enabled: boolean;
+    bindHost: string;
+    port: number;
+    hostsFilePath: string;
+    upstreams: string[];
+    udpListening: boolean;
+    tcpListening: boolean;
+    lastError: string | null;
+  };
 };
 
 export type ApplicationListItem = {

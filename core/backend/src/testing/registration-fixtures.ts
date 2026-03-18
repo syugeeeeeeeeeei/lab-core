@@ -1,3 +1,5 @@
+import { env } from "../lib/env.js";
+
 export type RegistrationFixture = {
   id: string;
   label: string;
@@ -28,7 +30,7 @@ export const registrationFixtures: RegistrationFixture[] = [
       composePath: "docker-compose.yml",
       publicServiceName: "oruca-web",
       publicPort: 80,
-      hostname: "oruca-test.fukaya-sus.lab",
+      hostname: `oruca-test.${env.rootDomain}`,
       mode: "standard",
       keepVolumesOnRebuild: true,
       deviceRequirements: ["/dev/bus/usb"]
@@ -45,7 +47,7 @@ export const registrationFixtures: RegistrationFixture[] = [
       composePath: "docker-compose.yml",
       publicServiceName: "web",
       publicPort: 3000,
-      hostname: "homepage-test.fukaya-sus.lab",
+      hostname: `homepage-test.${env.rootDomain}`,
       mode: "standard",
       keepVolumesOnRebuild: true,
       deviceRequirements: []
@@ -62,7 +64,7 @@ export const registrationFixtures: RegistrationFixture[] = [
       composePath: "docker-compose.yml",
       publicServiceName: "api",
       publicPort: 8080,
-      hostname: "api-test.fukaya-sus.lab",
+      hostname: `api-test.${env.rootDomain}`,
       mode: "headless",
       keepVolumesOnRebuild: true,
       deviceRequirements: []

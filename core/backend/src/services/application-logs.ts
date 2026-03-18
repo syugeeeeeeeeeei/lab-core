@@ -3,6 +3,7 @@ import path from "node:path";
 import { db, nowIso } from "../lib/db.js";
 import { env } from "../lib/env.js";
 import { runCommand } from "./command-runner.js";
+import { buildComposeProjectName } from "./compose-project.js";
 
 type AppDeploymentRow = {
   application_id: string;
@@ -72,6 +73,7 @@ function parseLogLines(stdout: string): string[] {
 export async function listApplicationServices(applicationId: string): Promise<string[]> {
   const app = getAppDeployment(applicationId);
   const repoPath = path.join(env.appsRoot, app.name);
+  const composeProjectName = buildComposeProjectName(app.application_id, app.name);
 
   const servicesFromDb = db
     .prepare(
@@ -101,7 +103,11 @@ export async function listApplicationServices(applicationId: string): Promise<st
   }
 
   try {
-    const result = await runCommand("docker", ["compose", "-f", composeFilePath, "config", "--services"], { cwd: repoPath });
+    const result = await runCommand(
+      "docker",
+      ["compose", "-p", composeProjectName, "-f", composeFilePath, "config", "--services"],
+      { cwd: repoPath }
+    );
     const discovered = parseServiceListFromComposeConfig(result.stdout);
     return Array.from(new Set([...discovered, ...mergedDefaults]));
   } catch {
@@ -115,6 +121,7 @@ export async function readApplicationLogs(
 ): Promise<ApplicationLogSnapshot> {
   const app = getAppDeployment(applicationId);
   const repoPath = path.join(env.appsRoot, app.name);
+  const composeProjectName = buildComposeProjectName(app.application_id, app.name);
 
   if (env.executionMode === "dry-run") {
     const events = db
@@ -155,7 +162,7 @@ export async function readApplicationLogs(
     throw new Error(`compose ファイルが見つかりません: ${composeFilePath}`);
   }
 
-  const args = ["compose", "-f", composeFilePath, "logs", "--no-color", "--tail", String(options.tail)];
+  const args = ["compose", "-p", composeProjectName, "-f", composeFilePath, "logs", "--no-color", "--tail", String(options.tail)];
   if (options.service) {
     args.push(options.service);
   }

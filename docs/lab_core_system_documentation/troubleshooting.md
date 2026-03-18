@@ -84,13 +84,17 @@
 確認:
 - アプリ/route が `enabled=1` か
 - 生成先パスが `.env` で正しいか
+- 使っている hostname が内蔵 DNS または外部 DNS で名前解決できるか
+- backend の DNS サーバーが `127.0.0.1:53` などで待受できているか
 
 対処:
 1. 「DNS/Proxy 同期」を再実行
 2. 生成ファイルを確認
    - `core/backend/data/generated/Caddyfile`
    - `core/backend/data/generated/fukaya-sus.hosts`
-3. 必要なら `.env` の生成先設定を修正
+3. ホーム画面の DNS サーバーカード、または `GET /api/system/status` の `dnsServer` を確認
+4. `53` 番 bind に失敗している場合は、権限付きで backend を起動するか `infra/compose/docker-compose.dev.yml` を使う
+5. 外部 DNS を使う運用なら、生成された hosts をその DNS に反映する
 
 ## 9. `.env` 編集が怖い
 推奨:
@@ -120,4 +124,3 @@
 
 注意:
 DB 初期化は登録情報と履歴が失われるため、必要に応じてバックアップしてから実施
-
