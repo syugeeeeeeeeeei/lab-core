@@ -19,3 +19,5 @@
 - 実際に操作したい: `user_manual.md`
 - 困りごとを解決したい: `troubleshooting.md`
 
+## 関連資料
+- 適合アプリの作り方: `../lab_core_app_repository_guide/app_repository_creation_guide.md`
