@@ -33,10 +33,22 @@ export type ApplicationListItem = {
   mode: "standard" | "headless";
   has_update: boolean;
   updated_at: string;
+  latest_error_title?: string | null;
+  latest_error_message?: string | null;
+  latest_error_at?: string | null;
+  latest_job_type?: string | null;
+  latest_job_status?: "queued" | "running" | "succeeded" | "failed" | null;
+  latest_job_message?: string | null;
+  latest_job_created_at?: string | null;
+  latest_job_started_at?: string | null;
+  latest_job_finished_at?: string | null;
 };
 
 export type SystemEvent = {
   event_id: string;
+  scope?: string;
+  application_id?: string | null;
+  application_name?: string | null;
   level: "info" | "warning" | "error";
   title: string;
   message: string;
@@ -55,6 +67,42 @@ export type CreateApplicationPayload = {
   mode: "standard" | "headless";
   keepVolumesOnRebuild: boolean;
   deviceRequirements: string[];
+};
+
+export type CreateApplicationResponse = {
+  applicationId: string;
+  deploymentId: string;
+  routeId: string;
+  jobId: string;
+  message: string;
+};
+
+export type ImportResolveResponse = {
+  canonicalRepositoryUrl: string;
+  resolvedBranch: string;
+  branchFixed: boolean;
+  branchCandidates: string[];
+  repositoryFiles: string[];
+  yamlFiles: string[];
+  composeCandidates: string[];
+  recommendedComposePath: string | null;
+  warning?: string;
+};
+
+export type ComposeServiceCandidate = {
+  name: string;
+  portOptions: number[];
+  publishedPorts: number[];
+  exposePorts: number[];
+  detectedPublicPort: number | null;
+  likelyPublic: boolean;
+  reason: string;
+};
+
+export type ImportComposeInspectResponse = {
+  composePath: string;
+  services: ComposeServiceCandidate[];
+  warning?: string;
 };
 
 export type DeleteMode = "config_only" | "source_and_config" | "full";

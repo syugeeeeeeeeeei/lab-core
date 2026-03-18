@@ -11,10 +11,11 @@ eventsRouter.get("/", (c) => {
     const events = db
       .prepare(
         `
-          SELECT event_id, scope, application_id, level, title, message, created_at
-          FROM system_events
-          WHERE application_id = ?
-          ORDER BY created_at DESC
+          SELECT se.event_id, se.scope, se.application_id, a.name AS application_name, se.level, se.title, se.message, se.created_at
+          FROM system_events se
+          LEFT JOIN applications a ON a.application_id = se.application_id
+          WHERE se.application_id = ?
+          ORDER BY se.created_at DESC
           LIMIT ?
         `
       )
@@ -26,9 +27,10 @@ eventsRouter.get("/", (c) => {
   const events = db
     .prepare(
       `
-        SELECT event_id, scope, application_id, level, title, message, created_at
-        FROM system_events
-        ORDER BY created_at DESC
+        SELECT se.event_id, se.scope, se.application_id, a.name AS application_name, se.level, se.title, se.message, se.created_at
+        FROM system_events se
+        LEFT JOIN applications a ON a.application_id = se.application_id
+        ORDER BY se.created_at DESC
         LIMIT ?
       `
     )

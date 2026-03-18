@@ -6,7 +6,7 @@ import { env } from "../lib/env.js";
 import type { JobStatus } from "../types.js";
 import { runCommand } from "./command-runner.js";
 import { recordEvent } from "./events.js";
-import { finishJob, startJob } from "./jobs.js";
+import { finishJob, setJobProgress, startJob } from "./jobs.js";
 import { syncInfrastructure } from "./infrastructure-sync.js";
 
 type AppDeploymentRow = {
@@ -201,19 +201,37 @@ function completeJob(jobId: string, status: Extract<JobStatus, "succeeded" | "fa
   finishJob(jobId, status, message);
 }
 
+function recordDeployProgress(applicationId: string, title: string, message: string): void {
+  recordEvent({
+    scope: "deployment",
+    applicationId,
+    level: "info",
+    title,
+    message
+  });
+}
+
 export async function executeDeployJob(applicationId: string, jobId: string): Promise<void> {
   const app = getAppDeployment(applicationId);
   startJob(jobId, "deploy ジョブを開始しました。");
 
   try {
     setAppStatus(applicationId, "Cloning");
+    setJobProgress(jobId, "GitHub リポジトリを取得しています。");
+    recordDeployProgress(applicationId, "リポジトリ取得を開始しました", `${app.repository_url} (${app.default_branch}) を取得しています。`);
     const { repoPath, headCommit } = await ensureRepository(app);
     setCommitInfo(applicationId, headCommit);
 
     setAppStatus(applicationId, "Deploying");
+    setJobProgress(jobId, `リポジトリ取得完了。commit ${headCommit.slice(0, 12)} を配備準備中です。`);
+    recordDeployProgress(applicationId, "リポジトリ取得が完了しました", `commit ${headCommit} を取得しました。`);
     const composeFilePath = path.resolve(repoPath, app.compose_path);
+    setJobProgress(jobId, `docker compose を起動しています。compose=${app.compose_path}`);
+    recordDeployProgress(applicationId, "コンテナを起動しています", `docker compose -f ${composeFilePath} up -d --build を実行しています。`);
     await runComposeUp(repoPath, composeFilePath);
 
+    setJobProgress(jobId, "公開ルートとインフラ設定を同期しています。");
+    recordDeployProgress(applicationId, "公開設定を同期しています", `アプリ ${app.name} の DNS / Proxy 設定を反映しています。`);
     setAppStatus(applicationId, "Running");
     syncInfrastructure(`deploy:${app.name}`);
 

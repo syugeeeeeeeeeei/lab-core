@@ -1,0 +1,119 @@
+import type { ApplicationListItem, SystemEvent, SystemStatus } from "../types";
+import { statusBadgeClass, toLocale } from "../ui";
+
+type HomeViewProps = {
+  system: SystemStatus | null;
+  applications: ApplicationListItem[];
+  events: SystemEvent[];
+  onOpenApplications: () => void;
+  onOpenImport: () => void;
+  onOpenDetail: (applicationId: string) => void;
+};
+
+export function HomeView(props: HomeViewProps) {
+  const { system, applications, events, onOpenApplications, onOpenImport, onOpenDetail } = props;
+
+  const priorityApps = applications
+    .filter((application) => application.status === "Failed" || application.status === "Degraded")
+    .slice(0, 30);
+
+  const recentEvents = [...events].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 30);
+
+  return (
+    <div className="view-grid home-view">
+      <section className="metrics-grid">
+        <article className="metric-card">
+          <p>登録アプリ</p>
+          <strong>{system?.applicationSummary.total ?? "-"}</strong>
+        </article>
+        <article className="metric-card">
+          <p>稼働中</p>
+          <strong>{system?.applicationSummary.running ?? "-"}</strong>
+        </article>
+        <article className="metric-card warn">
+          <p>不安定</p>
+          <strong>{system?.applicationSummary.degraded ?? "-"}</strong>
+        </article>
+        <article className="metric-card error">
+          <p>失敗</p>
+          <strong>{system?.applicationSummary.failed ?? "-"}</strong>
+        </article>
+      </section>
+
+      <section className="quick-grid">
+        <article className="quick-card">
+          <h2>アプリ運用</h2>
+          <p>登録済みアプリの状態確認と詳細画面への遷移。</p>
+          <button type="button" className="button primary" onClick={onOpenApplications}>
+            アプリ一覧へ
+          </button>
+        </article>
+        <article className="quick-card">
+          <h2>新規インポート</h2>
+          <p>GitHub URL からアプリ登録。tree URL の branch 解決に対応。</p>
+          <button type="button" className="button primary" onClick={onOpenImport}>
+            アプリ登録へ
+          </button>
+        </article>
+      </section>
+
+      <section className="split-grid home-split">
+        <article className="panel-card scroll-panel">
+          <div className="panel-head">
+            <h2>注意が必要なアプリ</h2>
+            <button type="button" className="button ghost" onClick={onOpenApplications}>
+              全一覧
+            </button>
+          </div>
+          <div className="panel-scroll">
+            {priorityApps.length === 0 ? <p className="empty-message">現在、注意アプリはありません。</p> : null}
+            <ul className="simple-list">
+              {priorityApps.map((application) => (
+                <li key={application.application_id} className="list-row">
+                  <div>
+                    <strong>{application.name}</strong>
+                    <p>{application.hostname}</p>
+                    {application.latest_error_title ? <p className="error-preview">{application.latest_error_title}</p> : null}
+                  </div>
+                  <div className="list-actions">
+                    <span className={statusBadgeClass(application.status)}>{application.status}</span>
+                    <button type="button" className="button tiny" onClick={() => onOpenDetail(application.application_id)}>
+                      詳細へ
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </article>
+
+        <article className="panel-card scroll-panel">
+          <div className="panel-head">
+            <h2>最近のイベント</h2>
+          </div>
+          <div className="panel-scroll">
+            {recentEvents.length === 0 ? <p className="empty-message">イベントはまだありません。</p> : null}
+            <ul className="event-list">
+              {recentEvents.map((event) => (
+                <li key={event.event_id} className={`event-item ${event.level}`}>
+                  <div>
+                    <strong>{event.title}</strong>
+                    {event.application_name ? <p className="event-app">対象: {event.application_name}</p> : null}
+                    <p>{event.message}</p>
+                    {(event.message.includes("\n") || event.message.length > 140) ? (
+                      <details className="event-details">
+                        <summary>詳細を開く</summary>
+                        <pre>{event.message}</pre>
+                      </details>
+                    ) : null}
+                  </div>
+                  <time>{toLocale(event.created_at)}</time>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </article>
+      </section>
+    </div>
+  );
+}

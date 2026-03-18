@@ -24,5 +24,6 @@
 
 ## ドキュメント
 - 総合ドキュメント入口: `docs/lab_core_system_documentation/index.md`
+- ダッシュボード詳細マニュアル: `docs/lab_core_system_documentation/user_manual.md`
 - 既存の操作説明書: `docs/readmes/how_to_use_lab_core.md`
 - 適合アプリ作成ガイド: `docs/lab_core_app_repository_guide/app_repository_creation_guide.md`

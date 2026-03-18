@@ -21,6 +21,12 @@ const updateJobStatusStatement = db.prepare(`
   WHERE job_id = ?
 `);
 
+const updateJobMessageStatement = db.prepare(`
+  UPDATE jobs
+  SET status = 'running', started_at = COALESCE(started_at, ?), message = ?, finished_at = NULL
+  WHERE job_id = ?
+`);
+
 export function createJob(type: JobType, applicationId?: string, message?: string): string {
   const jobId = nanoid();
   createJobStatement.run(jobId, type, "queued", null, null, message ?? null, applicationId ?? null, nowIso());
@@ -33,4 +39,8 @@ export function startJob(jobId: string, message?: string): void {
 
 export function finishJob(jobId: string, status: Extract<JobStatus, "succeeded" | "failed">, message: string): void {
   updateJobStatusStatement.run(status, nowIso(), nowIso(), message, jobId);
+}
+
+export function setJobProgress(jobId: string, message: string): void {
+  updateJobMessageStatement.run(nowIso(), message, jobId);
 }

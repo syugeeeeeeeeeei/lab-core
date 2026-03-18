@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   applyUpdate,
   checkUpdate,
@@ -8,141 +8,145 @@ import {
   fetchApplicationLogServices,
   fetchApplications,
   fetchEvents,
-  fetchRegistrationFixtures,
   fetchSystemStatus,
+  inspectComposeFile,
   rebuildApplication,
-  rollbackApplication,
+  resolveImportSource,
   restartApplication,
+  rollbackApplication,
   syncInfrastructure
 } from "./api";
-import { registrationFixtures as fallbackRegistrationFixtures } from "./registrationFixtures";
+import { DashboardShell, type DashboardView } from "./components/DashboardShell";
 import type {
   ApplicationListItem,
+  ComposeServiceCandidate,
   CreateApplicationPayload,
   DeleteMode,
-  RegistrationFixture,
+  ImportResolveResponse,
   SystemEvent,
   SystemStatus
 } from "./types";
+import { ApplicationDetailView, type DetailLogState } from "./views/ApplicationDetailView";
+import { ApplicationsView } from "./views/ApplicationsView";
+import { HomeView } from "./views/HomeView";
+import { ImportView, type ImportComposeState, type ImportFormState, type ImportResolveState } from "./views/ImportView";
 
-const initialForm: CreateApplicationPayload = {
+const AUTO_REFRESH_MS = 15000;
+const LOG_AUTO_REFRESH_MS = 5000;
+const TOAST_DURATION_MS = 4800;
+
+const initialImportForm: ImportFormState = {
   name: "",
   description: "",
-  repositoryUrl: "",
+  sourceUrl: "",
   defaultBranch: "main",
   composePath: "docker-compose.yml",
   publicServiceName: "web",
-  publicPort: 3000,
+  publicPort: "3000",
   hostname: "",
   mode: "standard",
-  keepVolumesOnRebuild: true,
-  deviceRequirements: []
+  keepVolumesOnRebuild: true
 };
 
-function toLocale(value: string): string {
-  try {
-    return new Date(value).toLocaleString("ja-JP");
-  } catch {
-    return value;
-  }
-}
+const initialResolveState: ImportResolveState = {
+  status: "idle",
+  canonicalRepositoryUrl: "",
+  branchCandidates: [],
+  branchFixed: false,
+  repositoryFiles: [],
+  yamlFiles: [],
+  composeCandidates: [],
+  recommendedComposePath: null,
+  warning: ""
+};
 
-function statusBadgeClass(status: string): string {
-  if (status === "Running") {
-    return "badge badge-ok";
-  }
-  if (status === "Degraded") {
-    return "badge badge-warn";
-  }
-  if (status === "Failed") {
-    return "badge badge-error";
-  }
-  return "badge";
-}
+const initialComposeState: ImportComposeState = {
+  status: "idle",
+  services: [],
+  warning: ""
+};
 
-function shortCommit(value: string | null): string {
-  if (!value) {
-    return "未取得";
-  }
-  return value.length > 12 ? value.slice(0, 12) : value;
-}
+const initialLogState: DetailLogState = {
+  opened: false,
+  services: [],
+  selectedService: "",
+  tail: 200,
+  lines: [],
+  lastFetchedAt: "",
+  loading: false,
+  autoScroll: true
+};
 
-function logLineClass(line: string): string {
-  const lower = line.toLowerCase();
-  if (lower.includes("error") || lower.includes("failed") || lower.includes("exception")) {
-    return "log-line error";
-  }
-  if (lower.includes("warn")) {
-    return "log-line warning";
-  }
-  return "log-line";
-}
-
-function createFixtureSuffix(): string {
-  const now = new Date();
-  const y = String(now.getFullYear()).slice(-2);
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  const hh = String(now.getHours()).padStart(2, "0");
-  const mm = String(now.getMinutes()).padStart(2, "0");
-  const ss = String(now.getSeconds()).padStart(2, "0");
-  const ms = String(now.getMilliseconds()).padStart(3, "0");
-  return `${y}${m}${d}${hh}${mm}${ss}${ms}`;
-}
-
-function appendSuffixToHostname(hostname: string, suffix: string): string {
-  const labels = hostname.split(".").filter(Boolean);
-  if (labels.length < 2) {
-    return `${hostname}-${suffix}`;
-  }
-  const [head, ...rest] = labels;
-  return [`${head}-${suffix}`, ...rest].join(".");
-}
-
-function buildFixturePayload(fixture: RegistrationFixture): CreateApplicationPayload {
-  const suffix = createFixtureSuffix();
-  const payload = fixture.payload;
-  const name = `${payload.name}-${suffix}`;
-
+function buildCreatePayload(form: ImportFormState, deviceRequirementsRaw: string): CreateApplicationPayload {
   return {
-    ...payload,
-    name: name.length > 80 ? name.slice(0, 80) : name,
-    hostname: appendSuffixToHostname(payload.hostname, suffix)
+    name: form.name,
+    description: form.description,
+    repositoryUrl: form.sourceUrl.trim(),
+    defaultBranch: form.defaultBranch.trim().length > 0 ? form.defaultBranch.trim() : "main",
+    composePath: form.composePath.trim().length > 0 ? form.composePath.trim() : "docker-compose.yml",
+    publicServiceName: form.publicServiceName,
+    publicPort: Number(form.publicPort),
+    hostname: form.hostname,
+    mode: form.mode,
+    keepVolumesOnRebuild: form.keepVolumesOnRebuild,
+    deviceRequirements: deviceRequirementsRaw
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
   };
 }
 
+function chooseRecommendedService(services: ComposeServiceCandidate[]): ComposeServiceCandidate | null {
+  return (
+    services.find((service) => service.likelyPublic && service.detectedPublicPort !== null) ??
+    services.find((service) => service.detectedPublicPort !== null) ??
+    services[0] ??
+    null
+  );
+}
+
 export function App() {
-  const logViewerRef = useRef<HTMLDivElement | null>(null);
+  const [activeView, setActiveView] = useState<DashboardView>("home");
+  const [selectedApplicationId, setSelectedApplicationId] = useState<string | null>(null);
+
   const [system, setSystem] = useState<SystemStatus | null>(null);
   const [applications, setApplications] = useState<ApplicationListItem[]>([]);
   const [events, setEvents] = useState<SystemEvent[]>([]);
-  const [form, setForm] = useState<CreateApplicationPayload>(initialForm);
-  const [fixtures, setFixtures] = useState<RegistrationFixture[]>(fallbackRegistrationFixtures);
-  const [selectedFixtureId, setSelectedFixtureId] = useState<string>(fallbackRegistrationFixtures[0]?.id ?? "");
+
+  const [form, setForm] = useState<ImportFormState>(initialImportForm);
+  const [resolveState, setResolveState] = useState<ImportResolveState>(initialResolveState);
+  const [composeState, setComposeState] = useState<ImportComposeState>(initialComposeState);
   const [deviceRequirementsRaw, setDeviceRequirementsRaw] = useState("");
-  const [deleteTarget, setDeleteTarget] = useState<ApplicationListItem | null>(null);
+
+  const [logs, setLogs] = useState<DetailLogState>(initialLogState);
   const [deleteMode, setDeleteMode] = useState<DeleteMode>("config_only");
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
-  const [logTarget, setLogTarget] = useState<ApplicationListItem | null>(null);
-  const [logServices, setLogServices] = useState<string[]>([]);
-  const [selectedLogService, setSelectedLogService] = useState("");
-  const [logTail, setLogTail] = useState(200);
-  const [logLines, setLogLines] = useState<string[]>([]);
-  const [lastLogFetchAt, setLastLogFetchAt] = useState("");
-  const [logsLoading, setLogsLoading] = useState(false);
-  const [autoScrollLogs, setAutoScrollLogs] = useState(true);
-  const [loading, setLoading] = useState(false);
+
+  const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [initialLoaded, setInitialLoaded] = useState(false);
   const [actionMessage, setActionMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
 
-  const sortedEvents = useMemo(
-    () => [...events].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 12),
-    [events]
+  const selectedApplication = useMemo(
+    () => applications.find((application) => application.application_id === selectedApplicationId) ?? null,
+    [applications, selectedApplicationId]
   );
 
-  async function reload(): Promise<void> {
-    setLoading(true);
-    setErrorMessage("");
+  async function reload(options: { mode?: "manual" | "background" | "action" } = {}): Promise<void> {
+    const mode = options.mode ?? "manual";
+
+    if (mode === "background" && (refreshing || busy)) {
+      return;
+    }
+
+    if (mode === "manual") {
+      setBusy(true);
+      setErrorMessage("");
+    } else if (mode === "background") {
+      setRefreshing(true);
+    }
+
     try {
       const [systemResponse, applicationsResponse, eventsResponse] = await Promise.all([
         fetchSystemStatus(),
@@ -152,587 +156,444 @@ export function App() {
       setSystem(systemResponse);
       setApplications(applicationsResponse);
       setEvents(eventsResponse);
+      setInitialLoaded(true);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "読み込みに失敗しました。");
+      if (mode !== "background") {
+        setErrorMessage(error instanceof Error ? error.message : "読み込みに失敗しました。");
+      }
     } finally {
-      setLoading(false);
+      if (mode === "manual") {
+        setBusy(false);
+      } else if (mode === "background") {
+        setRefreshing(false);
+      }
     }
   }
 
   useEffect(() => {
     void reload();
-    void (async () => {
-      try {
-        const remoteFixtures = await fetchRegistrationFixtures();
-        if (remoteFixtures.length > 0) {
-          setFixtures(remoteFixtures);
-        }
-      } catch {
-        // バックエンドのテストAPIが未使用でもローカルfixtureで継続できるようにする
-      }
-    })();
   }, []);
 
   useEffect(() => {
-    if (fixtures.length === 0) {
-      setSelectedFixtureId("");
+    if (!initialLoaded) {
       return;
     }
-    if (!fixtures.some((fixture) => fixture.id === selectedFixtureId)) {
-      setSelectedFixtureId(fixtures[0].id);
-    }
-  }, [fixtures, selectedFixtureId]);
+
+    const onDemandRefresh = () => {
+      if (document.visibilityState === "visible") {
+        void reload({ mode: "background" });
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void reload({ mode: "background" });
+      }
+    }, AUTO_REFRESH_MS);
+
+    window.addEventListener("focus", onDemandRefresh);
+    document.addEventListener("visibilitychange", onDemandRefresh);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onDemandRefresh);
+      document.removeEventListener("visibilitychange", onDemandRefresh);
+    };
+  }, [initialLoaded, busy, refreshing]);
 
   useEffect(() => {
-    if (!autoScrollLogs) {
+    if (!actionMessage) {
       return;
     }
-    if (!logViewerRef.current) {
-      return;
-    }
-    logViewerRef.current.scrollTop = logViewerRef.current.scrollHeight;
-  }, [autoScrollLogs, logLines]);
+    const timeoutId = window.setTimeout(() => setActionMessage(""), TOAST_DURATION_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [actionMessage]);
 
   useEffect(() => {
-    if (!logTarget) {
+    if (!errorMessage) {
       return;
     }
-    const exists = applications.some((application) => application.application_id === logTarget.application_id);
-    if (!exists) {
-      setLogTarget(null);
-      setLogServices([]);
-      setSelectedLogService("");
-      setLogLines([]);
-      setLastLogFetchAt("");
+    const timeoutId = window.setTimeout(() => setErrorMessage(""), TOAST_DURATION_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [errorMessage]);
+
+  useEffect(() => {
+    if (!selectedApplicationId) {
+      return;
     }
-  }, [applications, logTarget]);
+    if (!applications.some((application) => application.application_id === selectedApplicationId)) {
+      setSelectedApplicationId(null);
+      setActiveView("apps");
+      setLogs(initialLogState);
+      setDeleteConfirmText("");
+      setDeleteMode("config_only");
+    }
+  }, [applications, selectedApplicationId]);
+
+  useEffect(() => {
+    if (!selectedApplication || activeView !== "detail" || !logs.opened) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible" && !logs.loading) {
+        void refreshLogs(logs.selectedService || undefined, logs.tail);
+      }
+    }, LOG_AUTO_REFRESH_MS);
+
+    return () => window.clearInterval(intervalId);
+  }, [activeView, logs.loading, logs.opened, logs.selectedService, logs.tail, selectedApplication]);
 
   async function runAction(task: () => Promise<void>, successMessage: string): Promise<void> {
+    setBusy(true);
     setActionMessage("");
     setErrorMessage("");
+
     try {
       await task();
       setActionMessage(successMessage);
-      await reload();
+      await reload({ mode: "action" });
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "処理に失敗しました。");
+    } finally {
+      setBusy(false);
     }
   }
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
-
-    const payload: CreateApplicationPayload = {
-      ...form,
-      deviceRequirements: deviceRequirementsRaw
-        .split(",")
-        .map((value) => value.trim())
-        .filter((value) => value.length > 0)
-    };
-
-    await runAction(async () => createApplication(payload), "アプリを登録しました。");
-    setForm(initialForm);
-    setDeviceRequirementsRaw("");
-  }
-
-  function applyFixture(): void {
-    const fixture = fixtures.find((item) => item.id === selectedFixtureId);
-    if (!fixture) {
-      return;
-    }
-
-    const payload = buildFixturePayload(fixture);
-    setForm(payload);
-    setDeviceRequirementsRaw(payload.deviceRequirements.join(", "));
-    setActionMessage(`テスト値「${fixture.label}」を入力しました（重複回避サフィックス付き）。`);
-  }
-
-  async function onDeleteSubmit(): Promise<void> {
-    if (!deleteTarget) {
-      return;
-    }
-
-    if (deleteConfirmText.trim() !== deleteTarget.name) {
-      setErrorMessage("確認用のアプリ名が一致しません。");
-      return;
-    }
-
-    await runAction(
-      async () => deleteApplication(deleteTarget.application_id, deleteMode),
-      `${deleteTarget.name} の削除ジョブを開始しました。`
-    );
-    setDeleteTarget(null);
+  function openDetail(applicationId: string): void {
+    setSelectedApplicationId(applicationId);
+    setActiveView("detail");
+    setLogs(initialLogState);
     setDeleteConfirmText("");
     setDeleteMode("config_only");
   }
 
-  async function refreshLogs(options: { target?: ApplicationListItem | null; service?: string; tail?: number } = {}): Promise<void> {
-    const target = options.target ?? logTarget;
-    if (!target) {
+  function onFormFieldChange<K extends keyof ImportFormState>(key: K, value: ImportFormState[K]): void {
+    setForm((prev) => ({ ...prev, [key]: value }));
+
+    if (key === "sourceUrl") {
+      setResolveState(initialResolveState);
+      setComposeState(initialComposeState);
       return;
     }
 
-    const service = options.service ?? selectedLogService;
-    const tail = options.tail ?? logTail;
-
-    setLogsLoading(true);
-    setErrorMessage("");
-    try {
-      const snapshot = await fetchApplicationLogs(target.application_id, {
-        service: service.length > 0 ? service : undefined,
-        tail
-      });
-      setLogLines(snapshot.lines);
-      setLastLogFetchAt(snapshot.fetchedAt);
-      setLogTarget(target);
-      setSelectedLogService(service);
-      setLogTail(tail);
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "ログ取得に失敗しました。");
-    } finally {
-      setLogsLoading(false);
+    if (key === "defaultBranch" || key === "composePath") {
+      setComposeState(initialComposeState);
     }
   }
 
-  async function openLogViewer(application: ApplicationListItem): Promise<void> {
-    setLogTarget(application);
-    setLogServices([]);
-    setSelectedLogService("");
-    setLogTail(200);
-    setLogLines([]);
-    setLastLogFetchAt("");
-    setLogsLoading(true);
+  function applyResolveResult(result: ImportResolveResponse): void {
+    setResolveState({
+      status: "resolved",
+      canonicalRepositoryUrl: result.canonicalRepositoryUrl,
+      branchCandidates: result.branchCandidates,
+      branchFixed: result.branchFixed,
+      repositoryFiles: result.repositoryFiles,
+      yamlFiles: result.yamlFiles,
+      composeCandidates: result.composeCandidates,
+      recommendedComposePath: result.recommendedComposePath,
+      warning: result.warning ?? ""
+    });
+    setForm((prev) => ({
+      ...prev,
+      defaultBranch: result.resolvedBranch,
+      composePath: result.recommendedComposePath ?? prev.composePath
+    }));
+  }
+
+  async function inspectCompose(
+    composePath: string,
+    options: {
+      repositoryUrl?: string;
+      branch?: string;
+      autoSelect?: boolean;
+    } = {}
+  ): Promise<void> {
+    const repositoryUrl = options.repositoryUrl ?? resolveState.canonicalRepositoryUrl;
+    const branch = options.branch ?? form.defaultBranch;
+    const normalizedPath = composePath.trim();
+
+    if (repositoryUrl.length === 0 || branch.trim().length === 0 || normalizedPath.length === 0) {
+      return;
+    }
+
+    setComposeState({ status: "inspecting", services: [], warning: "" });
+
+    try {
+      const inspection = await inspectComposeFile(repositoryUrl, branch, normalizedPath);
+      setComposeState({
+        status: "ready",
+        services: inspection.services,
+        warning: inspection.warning ?? ""
+      });
+      setForm((prev) => ({ ...prev, composePath: inspection.composePath }));
+
+      if (options.autoSelect !== false) {
+        const recommended = chooseRecommendedService(inspection.services);
+        if (recommended) {
+          setForm((prev) => ({
+            ...prev,
+            publicServiceName: recommended.name,
+            publicPort: String(recommended.detectedPublicPort ?? prev.publicPort)
+          }));
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "compose 解析に失敗しました。";
+      setComposeState({
+        status: "error",
+        services: [],
+        warning: message
+      });
+    }
+  }
+
+  async function resolveSource(): Promise<void> {
+    const sourceUrl = form.sourceUrl.trim();
+    if (sourceUrl.length === 0) {
+      setResolveState(initialResolveState);
+      setComposeState(initialComposeState);
+      return;
+    }
+
+    setResolveState((prev) => ({ ...prev, status: "resolving", warning: "" }));
+    setComposeState(initialComposeState);
+
+    try {
+      const result = await resolveImportSource(sourceUrl);
+      applyResolveResult(result);
+
+      if (result.recommendedComposePath) {
+        await inspectCompose(result.recommendedComposePath, {
+          repositoryUrl: result.canonicalRepositoryUrl,
+          branch: result.resolvedBranch,
+          autoSelect: true
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "URL解析に失敗しました。";
+      setResolveState({
+        ...initialResolveState,
+        status: "error",
+        warning: `${message} 手入力で続行できます。`
+      });
+      setComposeState(initialComposeState);
+      setForm((prev) => ({
+        ...prev,
+        defaultBranch: prev.defaultBranch.trim().length > 0 ? prev.defaultBranch : "main"
+      }));
+    }
+  }
+
+  async function onImportSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const payload = buildCreatePayload(form, deviceRequirementsRaw);
+
+    if (payload.repositoryUrl.length === 0) {
+      setErrorMessage("GitHub URL を入力してください。");
+      return;
+    }
+
+    setBusy(true);
+    setActionMessage("");
     setErrorMessage("");
 
     try {
-      const services = await fetchApplicationLogServices(application.application_id);
-      setLogServices(services);
+      const response = await createApplication(payload);
+      setActionMessage("アプリを登録しました。");
+      setForm(initialImportForm);
+      setDeviceRequirementsRaw("");
+      setResolveState(initialResolveState);
+      setComposeState(initialComposeState);
+      await reload({ mode: "action" });
+      openDetail(response.applicationId);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "アプリ登録に失敗しました。");
+    } finally {
+      setBusy(false);
+    }
+  }
 
+  async function openLogs(application: ApplicationListItem): Promise<void> {
+    setLogs({
+      opened: true,
+      services: [],
+      selectedService: "",
+      tail: 200,
+      lines: [],
+      lastFetchedAt: "",
+      loading: true,
+      autoScroll: true
+    });
+
+    try {
+      const services = await fetchApplicationLogServices(application.application_id);
       const defaultService = services.includes(application.public_service_name)
         ? application.public_service_name
         : (services[0] ?? "");
-      setSelectedLogService(defaultService);
 
       const snapshot = await fetchApplicationLogs(application.application_id, {
         service: defaultService.length > 0 ? defaultService : undefined,
         tail: 200
       });
-      setLogLines(snapshot.lines);
-      setLastLogFetchAt(snapshot.fetchedAt);
+
+      setLogs((prev) => ({
+        ...prev,
+        opened: true,
+        services,
+        selectedService: defaultService,
+        lines: snapshot.lines,
+        tail: 200,
+        lastFetchedAt: snapshot.fetchedAt,
+        loading: false
+      }));
     } catch (error) {
+      setLogs((prev) => ({ ...prev, loading: false }));
       setErrorMessage(error instanceof Error ? error.message : "ログビューアの初期化に失敗しました。");
-    } finally {
-      setLogsLoading(false);
     }
   }
 
-  return (
-    <div className="page">
-      <header className="hero">
-        <div>
-          <p className="hero-label">LAB-CORE v3</p>
-          <h1>研究室配信基盤ダッシュボード</h1>
-          <p className="hero-subtitle">怖くない運用導線で、追加・再起動・復旧を一本化します。</p>
-          {system?.execution ? (
-            <p className="hero-mode">実行モード: {system.execution.mode === "dry-run" ? "dry-run" : "execute"}</p>
-          ) : null}
-        </div>
-        <div className="hero-actions">
-          <button
-            type="button"
-            className="button secondary"
-            onClick={() =>
-              void runAction(async () => syncInfrastructure("dashboard-manual-sync"), "DNS/Proxy 設定を同期しました。")
-            }
-            disabled={loading}
-          >
-            DNS/Proxy 同期
-          </button>
-          <button type="button" className="button secondary" onClick={() => void reload()} disabled={loading}>
-            {loading ? "更新中..." : "最新状態に更新"}
-          </button>
-        </div>
-      </header>
+  async function refreshLogs(service?: string, tail?: number): Promise<void> {
+    if (!selectedApplication) {
+      return;
+    }
 
-      {system ? (
-        <section className="grid metrics">
-          <article className="card metric">
-            <p>登録アプリ</p>
-            <strong>{system.applicationSummary.total}</strong>
-          </article>
-          <article className="card metric">
-            <p>稼働中</p>
-            <strong>{system.applicationSummary.running}</strong>
-          </article>
-          <article className="card metric warn">
-            <p>不安定</p>
-            <strong>{system.applicationSummary.degraded}</strong>
-          </article>
-          <article className="card metric error">
-            <p>失敗</p>
-            <strong>{system.applicationSummary.failed}</strong>
-          </article>
-        </section>
+    const nextService = service ?? logs.selectedService;
+    const nextTail = tail ?? logs.tail;
+
+    setLogs((prev) => ({ ...prev, loading: true }));
+    try {
+      const snapshot = await fetchApplicationLogs(selectedApplication.application_id, {
+        service: nextService.length > 0 ? nextService : undefined,
+        tail: nextTail
+      });
+      setLogs((prev) => ({
+        ...prev,
+        selectedService: nextService,
+        tail: nextTail,
+        lines: snapshot.lines,
+        lastFetchedAt: snapshot.fetchedAt,
+        loading: false
+      }));
+    } catch (error) {
+      setLogs((prev) => ({ ...prev, loading: false }));
+      setErrorMessage(error instanceof Error ? error.message : "ログ取得に失敗しました。");
+    }
+  }
+
+  async function onDeleteSubmit(): Promise<void> {
+    if (!selectedApplication) {
+      return;
+    }
+
+    if (deleteConfirmText.trim() !== selectedApplication.name) {
+      setErrorMessage("確認用のアプリ名が一致しません。");
+      return;
+    }
+
+    await runAction(
+      async () => deleteApplication(selectedApplication.application_id, deleteMode),
+      `${selectedApplication.name} の削除ジョブを開始しました。`
+    );
+
+    setDeleteConfirmText("");
+    setDeleteMode("config_only");
+    setLogs(initialLogState);
+    setSelectedApplicationId(null);
+    setActiveView("apps");
+  }
+
+  return (
+    <DashboardShell
+      activeView={activeView}
+      detailEnabled={selectedApplication !== null}
+      executionMode={system?.execution?.mode ?? null}
+      loading={busy}
+      onNavigate={setActiveView}
+      onReload={() => void reload()}
+      onSyncInfrastructure={() =>
+        void runAction(async () => syncInfrastructure("dashboard-manual-sync"), "DNS/Proxy 設定を同期しました。")
+      }
+    >
+      {(actionMessage || errorMessage) ? (
+        <div className="toast-stack" aria-live="polite">
+          {actionMessage ? <p className="notice success toast-notice">{actionMessage}</p> : null}
+          {errorMessage ? <p className="notice error toast-notice">{errorMessage}</p> : null}
+        </div>
       ) : null}
 
-      {actionMessage ? <p className="notice success">{actionMessage}</p> : null}
-      {errorMessage ? <p className="notice error">{errorMessage}</p> : null}
+      {activeView === "home" ? (
+        <HomeView
+          system={system}
+          applications={applications}
+          events={events}
+          onOpenApplications={() => setActiveView("apps")}
+          onOpenImport={() => setActiveView("import")}
+          onOpenDetail={(applicationId) => openDetail(applicationId)}
+        />
+      ) : null}
 
-      <main className="grid two-column">
-        <section className="card form-card">
-          <h2>アプリ登録</h2>
-          <div className="fixture-tools">
-            <label>
-              登録テスト値
-              <select value={selectedFixtureId} onChange={(event) => setSelectedFixtureId(event.target.value)}>
-                {fixtures.map((fixture) => (
-                  <option key={fixture.id} value={fixture.id}>
-                    {fixture.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button type="button" className="button tiny secondary" onClick={applyFixture}>
-              テスト値を入力
-            </button>
-          </div>
-          <p className="fixture-hint">同名衝突を防ぐため、アプリ名とサブドメインに時刻サフィックスを自動付与します。</p>
-          <form onSubmit={(event) => void onSubmit(event)} className="app-form">
-            <label>
-              アプリ名
-              <input
-                required
-                value={form.name}
-                onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
-              />
-            </label>
-            <label>
-              Git URL
-              <input
-                required
-                value={form.repositoryUrl}
-                onChange={(event) => setForm((prev) => ({ ...prev, repositoryUrl: event.target.value }))}
-              />
-            </label>
-            <label>
-              サブドメイン
-              <input
-                required
-                placeholder="oruca.fukaya-sus.lab"
-                value={form.hostname}
-                onChange={(event) => setForm((prev) => ({ ...prev, hostname: event.target.value }))}
-              />
-            </label>
-            <label>
-              公開サービス名
-              <input
-                required
-                value={form.publicServiceName}
-                onChange={(event) => setForm((prev) => ({ ...prev, publicServiceName: event.target.value }))}
-              />
-            </label>
-            <label>
-              公開ポート
-              <input
-                type="number"
-                required
-                min={1}
-                max={65535}
-                value={form.publicPort}
-                onChange={(event) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    publicPort: Number(event.target.value)
-                  }))
-                }
-              />
-            </label>
-            <label>
-              モード
-              <select
-                value={form.mode}
-                onChange={(event) => setForm((prev) => ({ ...prev, mode: event.target.value as "standard" | "headless" }))}
-              >
-                <option value="standard">Standard</option>
-                <option value="headless">Headless</option>
-              </select>
-            </label>
-            <label>
-              デバイス要件 (カンマ区切り)
-              <input
-                placeholder="/dev/bus/usb, /dev/ttyUSB0"
-                value={deviceRequirementsRaw}
-                onChange={(event) => setDeviceRequirementsRaw(event.target.value)}
-              />
-            </label>
-            <button type="submit" className="button primary" disabled={loading}>
-              登録して配備キューに追加
-            </button>
-          </form>
-        </section>
+      {activeView === "apps" ? (
+        <ApplicationsView applications={applications} onOpenDetail={(applicationId) => openDetail(applicationId)} />
+      ) : null}
 
-        <section className="card list-card">
-          <h2>アプリ一覧</h2>
-          <div className="list-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>アプリ</th>
-                  <th>状態</th>
-                  <th>公開先</th>
-                  <th>更新</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {applications.map((application) => (
-                  <tr key={application.application_id}>
-                    <td>
-                      <strong>{application.name}</strong>
-                      <p>{application.mode === "headless" ? "Headless" : "Standard"}</p>
-                      <p>current: {shortCommit(application.current_commit)}</p>
-                      <p>prev: {shortCommit(application.previous_commit)}</p>
-                    </td>
-                    <td>
-                      <span className={statusBadgeClass(application.status)}>{application.status}</span>
-                    </td>
-                    <td>
-                      <a href={`http://${application.hostname}`} target="_blank" rel="noreferrer">
-                        {application.hostname}
-                      </a>
-                    </td>
-                    <td>{application.has_update ? "更新あり" : "最新"}</td>
-                    <td>
-                      <div className="action-row">
-                        <button
-                          type="button"
-                          className="button tiny"
-                          onClick={() =>
-                            void runAction(
-                              async () => restartApplication(application.application_id),
-                              `${application.name} を再起動しました。`
-                            )
-                          }
-                        >
-                          再起動
-                        </button>
-                        <button
-                          type="button"
-                          className="button tiny secondary"
-                          onClick={() =>
-                            void runAction(
-                              async () => rebuildApplication(application.application_id, true),
-                              `${application.name} をデータ保持で再ビルドしました。`
-                            )
-                          }
-                        >
-                          再ビルド
-                        </button>
-                        <button
-                          type="button"
-                          className="button tiny warn"
-                          onClick={() =>
-                            void runAction(
-                              async () => checkUpdate(application.application_id),
-                              `${application.name} の更新確認を完了しました。`
-                            )
-                          }
-                        >
-                          更新確認
-                        </button>
-                        <button
-                          type="button"
-                          className="button tiny warn"
-                          onClick={() =>
-                            void runAction(
-                              async () => applyUpdate(application.application_id),
-                              `${application.name} の更新適用ジョブを開始しました。`
-                            )
-                          }
-                        >
-                          更新適用
-                        </button>
-                        <button
-                          type="button"
-                          className="button tiny"
-                          onClick={() =>
-                            void runAction(
-                              async () => rollbackApplication(application.application_id),
-                              `${application.name} のロールバックジョブを開始しました。`
-                            )
-                          }
-                          disabled={!application.previous_commit}
-                          title={!application.previous_commit ? "ロールバック可能な1つ前コミットがありません" : ""}
-                        >
-                          ロールバック
-                        </button>
-                        <button
-                          type="button"
-                          className="button tiny secondary"
-                          onClick={() => void openLogViewer(application)}
-                        >
-                          ログ
-                        </button>
-                        <button
-                          type="button"
-                          className="button tiny danger"
-                          onClick={() => {
-                            setDeleteTarget(application);
-                            setDeleteMode("config_only");
-                            setDeleteConfirmText("");
-                          }}
-                        >
-                          削除
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {applications.length === 0 ? (
-                  <tr>
-                    <td colSpan={5}>登録されたアプリはありません。</td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-        </section>
+      {activeView === "import" ? (
+        <ImportView
+          form={form}
+          deviceRequirementsRaw={deviceRequirementsRaw}
+          resolveState={resolveState}
+          composeState={composeState}
+          loading={busy}
+          onFieldChange={onFormFieldChange}
+          onDeviceRequirementsChange={setDeviceRequirementsRaw}
+          onResolveSource={resolveSource}
+          onInspectCompose={(composePath) => inspectCompose(composePath, { autoSelect: true })}
+          onSelectService={(service) =>
+            setForm((prev) => ({
+              ...prev,
+              publicServiceName: service.name,
+              publicPort: String(service.detectedPublicPort ?? prev.publicPort)
+            }))
+          }
+          onSubmit={onImportSubmit}
+        />
+      ) : null}
 
-        <section className="card events-card full">
-          <h2>最近のイベント</h2>
-          <ul>
-            {sortedEvents.map((event) => (
-              <li key={event.event_id} className={`event-item ${event.level}`}>
-                <div>
-                  <strong>{event.title}</strong>
-                  <p>{event.message}</p>
-                </div>
-                <time>{toLocale(event.created_at)}</time>
-              </li>
-            ))}
-            {sortedEvents.length === 0 ? <li className="event-item">イベントはまだありません。</li> : null}
-          </ul>
-        </section>
-
-        {logTarget ? (
-          <section className="card logs-card full">
-            <div className="logs-header">
-              <div>
-                <h2>ログ確認: {logTarget.name}</h2>
-                <p className="logs-meta">
-                  最終取得: {lastLogFetchAt.length > 0 ? toLocale(lastLogFetchAt) : "未取得"}
-                </p>
-              </div>
-              <div className="logs-actions">
-                <label>
-                  サービス
-                  <select
-                    value={selectedLogService}
-                    onChange={(event) => {
-                      const nextService = event.target.value;
-                      setSelectedLogService(nextService);
-                      void refreshLogs({ service: nextService });
-                    }}
-                  >
-                    <option value="">全サービス</option>
-                    {logServices.map((service) => (
-                      <option key={service} value={service}>
-                        {service}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  表示行数
-                  <select
-                    value={String(logTail)}
-                    onChange={(event) => {
-                      const nextTail = Number(event.target.value);
-                      setLogTail(nextTail);
-                      void refreshLogs({ tail: nextTail });
-                    }}
-                  >
-                    <option value="100">100</option>
-                    <option value="200">200</option>
-                    <option value="500">500</option>
-                    <option value="1000">1000</option>
-                  </select>
-                </label>
-                <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={autoScrollLogs}
-                    onChange={(event) => setAutoScrollLogs(event.target.checked)}
-                  />
-                  自動スクロール
-                </label>
-                <button type="button" className="button tiny secondary" onClick={() => void refreshLogs()}>
-                  {logsLoading ? "取得中..." : "ログ更新"}
-                </button>
-                <button
-                  type="button"
-                  className="button tiny"
-                  onClick={() => {
-                    setLogTarget(null);
-                    setLogServices([]);
-                    setSelectedLogService("");
-                    setLogLines([]);
-                    setLastLogFetchAt("");
-                  }}
-                >
-                  閉じる
-                </button>
-              </div>
-            </div>
-            <div className="log-viewer" ref={logViewerRef}>
-              {logLines.length === 0 ? (
-                <p className="log-empty">{logsLoading ? "ログを取得しています..." : "表示できるログがありません。"}</p>
-              ) : (
-                <ul className="log-lines">
-                  {logLines.map((line, index) => (
-                    <li key={`${index}-${line.slice(0, 30)}`} className={logLineClass(line)}>
-                      {line}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </section>
-        ) : null}
-
-        {deleteTarget ? (
-          <section className="card delete-card full">
-            <h2>削除確認: {deleteTarget.name}</h2>
-            <p>破壊的操作です。削除モードを選び、確認のためアプリ名を入力してください。</p>
-            <div className="delete-grid">
-              <label>
-                削除モード
-                <select value={deleteMode} onChange={(event) => setDeleteMode(event.target.value as DeleteMode)}>
-                  <option value="config_only">構成のみ削除</option>
-                  <option value="source_and_config">構成 + ソース削除</option>
-                  <option value="full">構成 + ソース + データ削除</option>
-                </select>
-              </label>
-              <label>
-                確認用アプリ名
-                <input
-                  placeholder={deleteTarget.name}
-                  value={deleteConfirmText}
-                  onChange={(event) => setDeleteConfirmText(event.target.value)}
-                />
-              </label>
-            </div>
-            <div className="delete-actions">
-              <button type="button" className="button secondary" onClick={() => setDeleteTarget(null)}>
-                キャンセル
-              </button>
-              <button type="button" className="button danger" onClick={() => void onDeleteSubmit()} disabled={loading}>
-                削除ジョブを開始
-              </button>
-            </div>
-          </section>
-        ) : null}
-      </main>
-    </div>
+      {activeView === "detail" ? (
+        <ApplicationDetailView
+          application={selectedApplication}
+          events={events}
+          loading={busy}
+          logs={logs}
+          deleteMode={deleteMode}
+          deleteConfirmText={deleteConfirmText}
+          onBackToApplications={() => setActiveView("apps")}
+          onRestart={(applicationId, applicationName) =>
+            void runAction(async () => restartApplication(applicationId), `${applicationName} を再起動しました。`)
+          }
+          onRebuild={(applicationId, applicationName) =>
+            void runAction(async () => rebuildApplication(applicationId, true), `${applicationName} をデータ保持で再ビルドしました。`)
+          }
+          onCheckUpdate={(applicationId, applicationName) =>
+            void runAction(async () => checkUpdate(applicationId), `${applicationName} の更新確認を完了しました。`)
+          }
+          onApplyUpdate={(applicationId, applicationName) =>
+            void runAction(async () => applyUpdate(applicationId), `${applicationName} の更新適用ジョブを開始しました。`)
+          }
+          onRollback={(applicationId, applicationName) =>
+            void runAction(async () => rollbackApplication(applicationId), `${applicationName} のロールバックジョブを開始しました。`)
+          }
+          onOpenLogs={(application) => void openLogs(application)}
+          onRefreshLogs={(service, tail) => void refreshLogs(service, tail)}
+          onCloseLogs={() => setLogs(initialLogState)}
+          onSetSelectedLogService={(service) => setLogs((prev) => ({ ...prev, selectedService: service }))}
+          onSetLogTail={(tail) => setLogs((prev) => ({ ...prev, tail }))}
+          onSetAutoScroll={(enabled) => setLogs((prev) => ({ ...prev, autoScroll: enabled }))}
+          onDeleteModeChange={setDeleteMode}
+          onDeleteConfirmChange={setDeleteConfirmText}
+          onDeleteSubmit={() => void onDeleteSubmit()}
+        />
+      ) : null}
+    </DashboardShell>
   );
 }

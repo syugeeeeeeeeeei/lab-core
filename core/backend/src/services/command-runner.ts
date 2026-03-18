@@ -14,6 +14,14 @@ function formatCommand(command: string, args: string[]): string {
   return [command, ...args].join(" ");
 }
 
+function trimOutput(value: string, maxLength = 4000): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength)}\n... (truncated)`;
+}
+
 export async function runCommand(
   command: string,
   args: string[],
@@ -65,8 +73,18 @@ export async function runCommand(
       };
 
       if ((exitCode ?? 1) !== 0) {
-        const detail = stderr.trim().length > 0 ? stderr.trim() : "コマンドが失敗しました。";
-        reject(new Error(`${formatted}\n${detail}`));
+        const sections = [`command: ${formatted}`];
+        if (stdout.trim().length > 0) {
+          sections.push(`stdout:\n${trimOutput(stdout)}`);
+        }
+        if (stderr.trim().length > 0) {
+          sections.push(`stderr:\n${trimOutput(stderr)}`);
+        }
+        if (stdout.trim().length === 0 && stderr.trim().length === 0) {
+          sections.push("コマンドが失敗しました。");
+        }
+
+        reject(new Error(sections.join("\n\n")));
         return;
       }
 

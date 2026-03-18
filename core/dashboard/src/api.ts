@@ -1,8 +1,11 @@
 import type {
   ApplicationListItem,
   ApplicationLogsResponse,
+  CreateApplicationResponse,
   CreateApplicationPayload,
   DeleteMode,
+  ImportComposeInspectResponse,
+  ImportResolveResponse,
   RegistrationFixture,
   SystemEvent,
   SystemStatus
@@ -44,10 +47,28 @@ export async function fetchEvents(limit = 50): Promise<SystemEvent[]> {
   return response.events;
 }
 
-export async function createApplication(payload: CreateApplicationPayload): Promise<void> {
-  await requestJson("/api/applications", {
+export async function createApplication(payload: CreateApplicationPayload): Promise<CreateApplicationResponse> {
+  return requestJson<CreateApplicationResponse>("/api/applications", {
     method: "POST",
     body: JSON.stringify(payload)
+  });
+}
+
+export async function resolveImportSource(sourceUrl: string): Promise<ImportResolveResponse> {
+  return requestJson<ImportResolveResponse>("/api/applications/import/resolve", {
+    method: "POST",
+    body: JSON.stringify({ sourceUrl })
+  });
+}
+
+export async function inspectComposeFile(
+  repositoryUrl: string,
+  branch: string,
+  composePath: string
+): Promise<ImportComposeInspectResponse> {
+  return requestJson<ImportComposeInspectResponse>("/api/applications/import/compose-inspect", {
+    method: "POST",
+    body: JSON.stringify({ repositoryUrl, branch, composePath })
   });
 }
 
