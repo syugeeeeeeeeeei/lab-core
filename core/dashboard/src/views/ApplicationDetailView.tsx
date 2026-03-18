@@ -174,32 +174,34 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
         </div>
       </section>
 
-      <section className="panel-card">
+      <section className="panel-card detail-events-card">
         <div className="panel-head">
           <h2>最近の進行イベント</h2>
           <p className="panel-sub">{recentEvents.length} 件</p>
         </div>
-        {recentEvents.length === 0 ? (
-          <p className="empty-message">このアプリに紐づくイベントはまだありません。</p>
-        ) : (
-          <ul className="event-list detail-event-list">
-            {recentEvents.map((event) => (
-              <li key={event.event_id} className={`event-item ${event.level}`}>
-                <div>
-                  <strong>{event.title}</strong>
-                  <p>{event.message}</p>
-                  {(event.message.includes("\n") || event.message.length > 140) ? (
-                    <details className="event-details">
-                      <summary>詳細を開く</summary>
-                      <pre>{event.message}</pre>
-                    </details>
-                  ) : null}
-                </div>
-                <time>{toLocale(event.created_at)}</time>
-              </li>
-            ))}
-          </ul>
-        )}
+        <div className="detail-events-scroll">
+          {recentEvents.length === 0 ? (
+            <p className="empty-message">このアプリに紐づくイベントはまだありません。</p>
+          ) : (
+            <ul className="event-list detail-event-list">
+              {recentEvents.map((event) => (
+                <li key={event.event_id} className={`event-item ${event.level}`}>
+                  <div>
+                    <strong>{event.title}</strong>
+                    <p>{event.message}</p>
+                    {(event.message.includes("\n") || event.message.length > 140) ? (
+                      <details className="event-details">
+                        <summary>詳細を開く</summary>
+                        <pre>{event.message}</pre>
+                      </details>
+                    ) : null}
+                  </div>
+                  <time>{toLocale(event.created_at)}</time>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </section>
 
       {logs.opened ? (

@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/api.ts","./src/main.tsx","./src/registrationFixtures.ts","./src/types.ts"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/api.ts","./src/main.tsx","./src/registrationFixtures.ts","./src/types.ts","./src/ui.ts","./src/components/DashboardShell.tsx","./src/views/ApplicationDetailView.tsx","./src/views/ApplicationsView.tsx","./src/views/HomeView.tsx","./src/views/ImportView.tsx"],"version":"5.9.3"}

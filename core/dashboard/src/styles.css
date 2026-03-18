@@ -195,10 +195,15 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  height: auto;
-  min-height: 100%;
-  overflow: auto;
+  height: 100%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-right: 4px;
+}
+
+.detail-view > .panel-card {
+  flex: 0 0 auto;
 }
 
 .metrics-grid {
@@ -669,6 +674,18 @@ td p {
 .detail-view .grow {
   min-height: auto;
   overflow: visible;
+}
+
+.detail-events-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.detail-events-scroll {
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .log-viewer {
