@@ -6,6 +6,9 @@
     "core/backend",
     "core/dashboard"
   ],
+  "dependencies": {
+    "@inquirer/prompts": "^7.10.1"
+  },
   "scripts": {
     "dev": "yarn dev:kernel:up",
     "dev:local": "yarn dev:backend",
