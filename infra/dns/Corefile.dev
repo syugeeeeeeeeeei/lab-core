@@ -1,0 +1,9 @@
+.:53 {
+    hosts /data/generated/fukaya-sus.hosts {
+        ttl 30
+        reload 2s
+        fallthrough
+    }
+    forward . /etc/resolv.conf
+    errors
+}

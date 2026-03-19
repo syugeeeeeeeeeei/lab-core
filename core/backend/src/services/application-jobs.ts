@@ -20,6 +20,13 @@ type AppDeploymentRow = {
   public_port: number;
 };
 
+type ComposeServiceInspection = {
+  name: string;
+  portOptions: number[];
+  detectedPublicPort: number | null;
+  likelyPublic: boolean;
+};
+
 function ensureRuntimeRoots(): void {
   fs.mkdirSync(env.appsRoot, { recursive: true });
   fs.mkdirSync(env.appDataRoot, { recursive: true });
@@ -59,6 +66,390 @@ function getAppDeployment(applicationId: string): AppDeploymentRow {
   }
 
   return row;
+}
+
+function parseInlineList(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
+    return [];
+  }
+
+  const inner = trimmed.slice(1, -1);
+  const items: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+
+  for (const char of inner) {
+    if ((char === "'" || char === '"') && quote === null) {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (quote && char === quote) {
+      quote = null;
+      current += char;
+      continue;
+    }
+    if (char === "," && quote === null) {
+      if (current.trim().length > 0) {
+        items.push(current.trim());
+      }
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  if (current.trim().length > 0) {
+    items.push(current.trim());
+  }
+
+  return items.map((item) => item.trim().replace(/^['"]|['"]$/g, ""));
+}
+
+function stripYamlComment(line: string): string {
+  let result = "";
+  let quote: "'" | '"' | null = null;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if ((char === "'" || char === '"') && quote === null) {
+      quote = char;
+      result += char;
+      continue;
+    }
+    if (quote && char === quote) {
+      quote = null;
+      result += char;
+      continue;
+    }
+    if (char === "#" && quote === null) {
+      break;
+    }
+    result += char;
+  }
+
+  return result.trimEnd();
+}
+
+function parseServiceKey(value: string): string | null {
+  const match = value.match(/^["']?([^"':]+)["']?:\s*$/);
+  return match ? match[1].trim() : null;
+}
+
+function parsePortNumber(value: string): number | null {
+  const match = value.match(/(\d+)/);
+  if (!match) {
+    return null;
+  }
+  const parsed = Number(match[1]);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseShortPortMapping(value: string): { target: number | null; published: number | null } {
+  const normalized = value.trim().replace(/^['"]|['"]$/g, "").replace(/\/(tcp|udp)$/i, "");
+  if (normalized.length === 0) {
+    return { target: null, published: null };
+  }
+
+  const directPort = parsePortNumber(normalized);
+  if (!normalized.includes(":")) {
+    return { target: directPort, published: null };
+  }
+
+  const segments = normalized.split(":");
+  const target = parsePortNumber(segments[segments.length - 1] ?? "");
+  let published: number | null = null;
+
+  for (let index = segments.length - 2; index >= 0; index -= 1) {
+    const parsed = parsePortNumber(segments[index] ?? "");
+    if (parsed !== null) {
+      published = parsed;
+      break;
+    }
+  }
+
+  return { target, published };
+}
+
+function chooseDetectedPort(portOptions: number[]): number | null {
+  const preferred = [80, 443, 3000, 8080, 8000, 5173, 4173, 5000, 8501, 8888];
+  for (const port of preferred) {
+    if (portOptions.includes(port)) {
+      return port;
+    }
+  }
+  return portOptions[0] ?? null;
+}
+
+function chooseRecommendedComposeService(services: ComposeServiceInspection[]): ComposeServiceInspection | null {
+  return services.find((service) => service.likelyPublic && service.detectedPublicPort !== null)
+    ?? services.find((service) => service.detectedPublicPort !== null)
+    ?? services[0]
+    ?? null;
+}
+
+function parseComposeServices(content: string): ComposeServiceInspection[] {
+  const lines = content.replace(/\r/g, "").split("\n");
+  const services = new Map<string, { targetPorts: Set<number>; publishedPorts: Set<number>; exposePorts: Set<number> }>();
+
+  let inServices = false;
+  let servicesIndent = -1;
+  let currentService: string | null = null;
+  let currentServiceIndent = -1;
+  let currentSection: "ports" | "expose" | null = null;
+  let currentPortMap: { target: number | null; published: number | null } | null = null;
+  let currentPortItemIndent = -1;
+
+  function ensureService(name: string) {
+    if (!services.has(name)) {
+      services.set(name, {
+        targetPorts: new Set<number>(),
+        publishedPorts: new Set<number>(),
+        exposePorts: new Set<number>()
+      });
+    }
+    return services.get(name)!;
+  }
+
+  function finalizePortMap(): void {
+    if (!currentService || !currentPortMap) {
+      return;
+    }
+    const service = ensureService(currentService);
+    if (currentPortMap.target !== null) {
+      service.targetPorts.add(currentPortMap.target);
+    }
+    if (currentPortMap.published !== null) {
+      service.publishedPorts.add(currentPortMap.published);
+    }
+    currentPortMap = null;
+    currentPortItemIndent = -1;
+  }
+
+  for (const rawLine of lines) {
+    const line = stripYamlComment(rawLine.replace(/\t/g, "  "));
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+
+    const indent = line.length - line.trimStart().length;
+
+    if (!inServices) {
+      if (trimmed === "services:") {
+        inServices = true;
+        servicesIndent = indent;
+      }
+      continue;
+    }
+
+    if (indent <= servicesIndent) {
+      finalizePortMap();
+      break;
+    }
+
+    if (currentPortMap && indent <= currentPortItemIndent) {
+      finalizePortMap();
+    }
+
+    const serviceKey = !trimmed.startsWith("- ") ? parseServiceKey(trimmed) : null;
+    if (serviceKey && indent > servicesIndent && (currentService === null || indent <= currentServiceIndent)) {
+      finalizePortMap();
+      currentService = serviceKey;
+      currentServiceIndent = indent;
+      currentSection = null;
+      ensureService(serviceKey);
+      continue;
+    }
+
+    if (!currentService) {
+      continue;
+    }
+
+    if (indent <= currentServiceIndent) {
+      finalizePortMap();
+      currentService = null;
+      currentSection = null;
+      continue;
+    }
+
+    if (!currentPortMap && !trimmed.startsWith("- ") && indent > currentServiceIndent) {
+      const keyMatch = trimmed.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
+      if (!keyMatch) {
+        currentSection = null;
+        continue;
+      }
+
+      const [, key, value] = keyMatch;
+      if (key !== "ports" && key !== "expose") {
+        currentSection = null;
+        continue;
+      }
+
+      currentSection = key;
+      const normalizedValue = value.trim();
+      const service = ensureService(currentService);
+      if (normalizedValue.length > 0) {
+        const inlineValues = parseInlineList(normalizedValue);
+        const values = inlineValues.length > 0 ? inlineValues : [normalizedValue];
+        for (const entry of values) {
+          if (currentSection === "ports") {
+            const parsedPort = parseShortPortMapping(entry);
+            if (parsedPort.target !== null) {
+              service.targetPorts.add(parsedPort.target);
+            }
+            if (parsedPort.published !== null) {
+              service.publishedPorts.add(parsedPort.published);
+            }
+          } else {
+            const exposePort = parsePortNumber(entry);
+            if (exposePort !== null) {
+              service.exposePorts.add(exposePort);
+            }
+          }
+        }
+      }
+      continue;
+    }
+
+    if (!currentSection || indent <= currentServiceIndent) {
+      continue;
+    }
+
+    const service = ensureService(currentService);
+
+    if (trimmed.startsWith("- ")) {
+      finalizePortMap();
+      const itemValue = trimmed.slice(2).trim();
+      if (currentSection === "ports") {
+        if (/^(target|published|protocol|host_ip|mode):/.test(itemValue) || itemValue.length === 0) {
+          currentPortMap = { target: null, published: null };
+          currentPortItemIndent = indent;
+          if (itemValue.length > 0) {
+            const [rawKey, rawValue] = itemValue.split(":", 2);
+            const mapValue = parsePortNumber(rawValue ?? "");
+            if (rawKey.trim() === "target") {
+              currentPortMap.target = mapValue;
+            }
+            if (rawKey.trim() === "published") {
+              currentPortMap.published = mapValue;
+            }
+          }
+        } else {
+          const parsedPort = parseShortPortMapping(itemValue);
+          if (parsedPort.target !== null) {
+            service.targetPorts.add(parsedPort.target);
+          }
+          if (parsedPort.published !== null) {
+            service.publishedPorts.add(parsedPort.published);
+          }
+        }
+      } else {
+        const exposePort = parsePortNumber(itemValue);
+        if (exposePort !== null) {
+          service.exposePorts.add(exposePort);
+        }
+      }
+      continue;
+    }
+
+    if (currentSection === "ports" && currentPortMap) {
+      const [rawKey, rawValue] = trimmed.split(":", 2);
+      const mapValue = parsePortNumber(rawValue ?? "");
+      if (rawKey.trim() === "target") {
+        currentPortMap.target = mapValue;
+      }
+      if (rawKey.trim() === "published") {
+        currentPortMap.published = mapValue;
+      }
+    }
+  }
+
+  finalizePortMap();
+
+  return [...services.entries()].map(([name, service]) => {
+    const portOptions = [...new Set([...service.targetPorts, ...service.exposePorts])].sort((a, b) => a - b);
+    const hasNameHint = /web|app|frontend|front|ui|http|nginx|caddy|server/i.test(name);
+    const detectedPublicPort = chooseDetectedPort(portOptions);
+    const likelyPublic = hasNameHint || (detectedPublicPort !== null && [80, 443, 3000, 8080, 8000, 5173].includes(detectedPublicPort));
+
+    return {
+      name,
+      portOptions,
+      detectedPublicPort,
+      likelyPublic
+    };
+  });
+}
+
+function reconcileDeploymentRouting(
+  applicationId: string,
+  composeFilePath: string,
+  configuredServiceName: string,
+  configuredPort: number
+): { serviceName: string; port: number; corrected: boolean; reason: string } {
+  if (!fs.existsSync(composeFilePath)) {
+    return {
+      serviceName: configuredServiceName,
+      port: configuredPort,
+      corrected: false,
+      reason: "compose ファイルが見つからないため現在設定を維持しました。"
+    };
+  }
+
+  const content = fs.readFileSync(composeFilePath, "utf8");
+  const services = parseComposeServices(content);
+  if (services.length === 0) {
+    return {
+      serviceName: configuredServiceName,
+      port: configuredPort,
+      corrected: false,
+      reason: "compose からサービス候補を検出できなかったため現在設定を維持しました。"
+    };
+  }
+
+  const configuredService = services.find((service) => service.name === configuredServiceName);
+  let resolvedServiceName = configuredServiceName;
+  let resolvedPort = configuredPort;
+
+  if (!configuredService) {
+    const recommendedService = chooseRecommendedComposeService(services);
+    if (recommendedService) {
+      resolvedServiceName = recommendedService.name;
+      resolvedPort = recommendedService.detectedPublicPort ?? recommendedService.portOptions[0] ?? configuredPort;
+    }
+  } else if (!configuredService.portOptions.includes(configuredPort)) {
+    resolvedPort = configuredService.detectedPublicPort ?? configuredService.portOptions[0] ?? configuredPort;
+  }
+
+  const corrected = resolvedServiceName !== configuredServiceName || resolvedPort !== configuredPort;
+  if (corrected) {
+    db.prepare(
+      `
+        UPDATE deployments
+        SET public_service_name = ?, public_port = ?
+        WHERE application_id = ?
+      `
+    ).run(resolvedServiceName, resolvedPort, applicationId);
+
+    db.prepare(
+      `
+        UPDATE routes
+        SET upstream_container = ?, upstream_port = ?
+        WHERE application_id = ?
+      `
+    ).run(resolvedServiceName, resolvedPort, applicationId);
+  }
+
+  return {
+    serviceName: resolvedServiceName,
+    port: resolvedPort,
+    corrected,
+    reason: corrected
+      ? `compose 実体に合わせて公開先を ${resolvedServiceName}:${resolvedPort} に補正しました。`
+      : "compose 実体と公開設定は一致していました。"
+  };
 }
 
 function setCommitInfo(applicationId: string, commitHash: string): void {
@@ -242,6 +633,16 @@ export async function executeDeployJob(applicationId: string, jobId: string): Pr
       `docker compose -p ${composeProjectName} -f ${composeFilePath} up -d --build を実行しています。`
     );
     await runComposeUp(repoPath, composeFilePath, composeProjectName);
+    const routing = reconcileDeploymentRouting(applicationId, composeFilePath, app.public_service_name, app.public_port);
+    if (routing.corrected) {
+      recordEvent({
+        scope: "deployment",
+        applicationId,
+        level: "warning",
+        title: "公開先設定を補正しました",
+        message: routing.reason
+      });
+    }
 
     setJobProgress(jobId, "公開ルートとインフラ設定を同期しています。");
     recordDeployProgress(applicationId, "公開設定を同期しています", `アプリ ${app.name} の DNS / Proxy 設定を反映しています。`);
@@ -310,6 +711,16 @@ export async function executeUpdateJob(applicationId: string, jobId: string): Pr
 
     const composeFilePath = path.resolve(repoPath, app.compose_path);
     await runComposeUp(repoPath, composeFilePath, composeProjectName);
+    const routing = reconcileDeploymentRouting(applicationId, composeFilePath, app.public_service_name, app.public_port);
+    if (routing.corrected) {
+      recordEvent({
+        scope: "update",
+        applicationId,
+        level: "warning",
+        title: "公開先設定を補正しました",
+        message: routing.reason
+      });
+    }
 
     setCommitPair(applicationId, afterCommit, beforeCommit);
     upsertUpdateInfo(applicationId, afterCommit, afterCommit, false);
@@ -383,6 +794,16 @@ export async function executeRollbackJob(applicationId: string, jobId: string): 
 
     const composeFilePath = path.resolve(repoPath, app.compose_path);
     await runComposeUp(repoPath, composeFilePath, composeProjectName);
+    const routing = reconcileDeploymentRouting(applicationId, composeFilePath, app.public_service_name, app.public_port);
+    if (routing.corrected) {
+      recordEvent({
+        scope: "update",
+        applicationId,
+        level: "warning",
+        title: "公開先設定を補正しました",
+        message: routing.reason
+      });
+    }
 
     const remoteHead = (await git.revparse([`origin/${app.default_branch}`])).trim();
     const nextPrevious = currentCommit ?? remoteHead;
@@ -438,6 +859,16 @@ export async function executeRebuildJob(applicationId: string, jobId: string, ke
     const composeFilePath = path.resolve(repoPath, app.compose_path);
     await runComposeDown(repoPath, composeFilePath, composeProjectName, keepData);
     await runComposeUp(repoPath, composeFilePath, composeProjectName);
+    const routing = reconcileDeploymentRouting(applicationId, composeFilePath, app.public_service_name, app.public_port);
+    if (routing.corrected) {
+      recordEvent({
+        scope: "runtime",
+        applicationId,
+        level: "warning",
+        title: "公開先設定を補正しました",
+        message: routing.reason
+      });
+    }
 
     setAppStatus(applicationId, "Running");
     syncInfrastructure(`rebuild:${app.name}`);

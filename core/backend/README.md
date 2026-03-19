@@ -37,19 +37,30 @@
 
 ## 生成ファイル
 - `LAB_CORE_PROXY_CONFIG_PATH`: 同期時に生成する Caddy 設定
-- `LAB_CORE_DNS_HOSTS_PATH`: 同期時に生成する DNS hosts
+- `LAB_CORE_DNS_HOSTS_PATH`: 同期時に生成する DNS レコードファイル（hosts 形式、OS の `/etc/hosts` ではない）
 
 ## DNS サーバー
 - `LAB_CORE_DNS_SERVER_ENABLED=true` で起動
 - `LAB_CORE_DNS_BIND_HOST`, `LAB_CORE_DNS_PORT` で待受先を指定
 - 未知の名前は `LAB_CORE_DNS_UPSTREAMS` または `/etc/resolv.conf` の upstream に転送
 - `53` 番ポートは権限が必要な場合があります
-- 開発で `127.0.0.1:53` を使う場合は、権限付きで backend を起動するか `infra/compose/docker-compose.dev.yml` を使ってください
+- ローカル開発の既定は `127.0.0.1:1053` です
+- ブラウザから `127.0.0.1:53` を使いたい場合は `yarn dev:dns` で Docker の DNS サイドカーを起動してください
+- 権限付きで backend 自体を `53` へ bind したい場合は `LAB_CORE_DNS_PORT=53` を明示してください
 
 ## 開発
 1. `yarn install`
 2. ルートで `yarn config:init`（`core/backend/.env` を対話生成）
 3. `yarn workspace @lab-core/backend dev`
+4. hostname 解決が必要なら `yarn dev:dns`
+5. HTTP 受け口が必要なら `yarn dev:proxy`
+
+## 保守
+- 全初期化 preview: `yarn maintenance:reset`
+- 全初期化実行: `yarn maintenance:reset:yes`
+- 先に backend / dashboard のローカル起動を止めるのが推奨
+- どうしても止めずに実行する場合は `yarn maintenance:reset --yes --force`
+- DB/生成物/runtime/Docker を削除するが、`core/backend/.env` は残す
 
 ## .env 読込
 - backend 起動時に `core/backend/.env` を自動読込します

@@ -88,6 +88,11 @@ function toPort(value: string | undefined, defaultValue: number): number {
   return defaultValue;
 }
 
+function defaultDnsPort(): number {
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  return uid === 0 ? 53 : 1053;
+}
+
 function toCsvList(value: string | undefined): string[] {
   if (!value) {
     return [];
@@ -120,6 +125,6 @@ export const env = {
   generatedSyncDir: toAbsolutePath(baseDir, process.env.LAB_CORE_SYNC_DIR ?? "./core/backend/data/generated"),
   dnsServerEnabled: toBoolean(process.env.LAB_CORE_DNS_SERVER_ENABLED, true),
   dnsBindHost: process.env.LAB_CORE_DNS_BIND_HOST ?? "127.0.0.1",
-  dnsPort: toPort(process.env.LAB_CORE_DNS_PORT, 53),
+  dnsPort: toPort(process.env.LAB_CORE_DNS_PORT, defaultDnsPort()),
   dnsUpstreams: toCsvList(process.env.LAB_CORE_DNS_UPSTREAMS)
 };

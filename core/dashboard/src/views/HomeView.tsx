@@ -62,11 +62,13 @@ export function HomeView(props: HomeViewProps) {
           <p>
             {dnsStatus?.enabled
               ? dnsListening
-                ? `待受中: ${dnsStatus.bindHost}:${dnsStatus.port}`
+                ? dnsStatus.port === 53
+                  ? `待受中: ${dnsStatus.bindHost}:${dnsStatus.port}`
+                  : `待受中: ${dnsStatus.bindHost}:${dnsStatus.port} / 53番は yarn dev:dns`
                 : `起動失敗: ${dnsStatus.lastError ?? "状態不明"}`
               : "無効化されています。"}
           </p>
-          {dnsStatus?.enabled ? <p>hosts: {dnsStatus.hostsFilePath}</p> : null}
+          {dnsStatus?.enabled ? <p>DNS生成ファイル: {dnsStatus.hostsFilePath}</p> : null}
         </article>
       </section>
 

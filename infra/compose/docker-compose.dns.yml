@@ -1,0 +1,14 @@
+services:
+  dns:
+    image: coredns/coredns:1.11.1
+    command:
+      - -conf
+      - /etc/coredns/Corefile
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:53:53/udp"
+      - "127.0.0.1:53:53/tcp"
+    volumes:
+      - ../dns/Corefile.dev:/etc/coredns/Corefile:ro
+      - ../../core/backend/data/generated:/data/generated:ro

@@ -29,7 +29,7 @@ const presets = {
       LAB_CORE_SYNC_DIR: "./core/backend/data/generated",
       LAB_CORE_DNS_SERVER_ENABLED: "true",
       LAB_CORE_DNS_BIND_HOST: "127.0.0.1",
-      LAB_CORE_DNS_PORT: "53",
+      LAB_CORE_DNS_PORT: "1053",
       LAB_CORE_DNS_UPSTREAMS: ""
     }
   },
@@ -197,7 +197,7 @@ const fieldDefinitions = [
     key: "LAB_CORE_DNS_PORT",
     label: "DNS待受ポート",
     explanation:
-      "この項目は、内蔵 DNS サーバーの待受ポートを決める機能に使われている、DNS待受ポートという役割を持つ値の番号を決定するための設定です。設定例: 53, 1053",
+      "この項目は、内蔵 DNS サーバーの待受ポートを決める機能に使われている、DNS待受ポートという役割を持つ値の番号を決定するための設定です。ローカル開発では 1053 と yarn dev:dns の組み合わせが安全です。設定例: 53, 1053",
     validate: (value) => {
       const num = Number(value);
       return Number.isInteger(num) && num >= 1 && num <= 65535;

@@ -16,6 +16,7 @@
 補足:
 - backend は `core/backend/.env` を起動時に自動読込します。
 - 設定を初期化したい場合は `yarn config:reset` を使用してください。
+- 開発データと起動中コンテナをまとめて初期化したい場合は `yarn maintenance:reset` を使い、確認後に `yarn maintenance:reset:yes` を実行してください。
 
 ## 3. 画面の見方
 - `登録アプリ`: 現在登録済みのアプリ数

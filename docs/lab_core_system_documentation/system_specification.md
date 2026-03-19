@@ -101,7 +101,7 @@ DNS/Proxy 生成ファイル再同期
 有効化された `routes + deployments`
 - 出力:
 `LAB_CORE_PROXY_CONFIG_PATH` に Caddyfile
-`LAB_CORE_DNS_HOSTS_PATH` に hosts 形式
+`LAB_CORE_DNS_HOSTS_PATH` に DNS レコードファイル（hosts 形式。OS の `/etc/hosts` は変更しない）
 - DNS 生成:
 `ssh.<rootDomain>` は `LAB_CORE_SSH_SERVICE_IP`
 各 route host は `LAB_CORE_MAIN_SERVICE_IP`

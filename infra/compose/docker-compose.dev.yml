@@ -18,8 +18,8 @@ services:
       LAB_CORE_DNS_PORT: "53"
     ports:
       - "7300:7300"
-      - "53:53/tcp"
-      - "53:53/udp"
+      - "127.0.0.1:53:53/tcp"
+      - "127.0.0.1:53:53/udp"
 
   dashboard:
     image: node:20-alpine

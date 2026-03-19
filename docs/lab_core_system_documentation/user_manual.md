@@ -22,13 +22,15 @@
 ### 2.2 開発時の起動
 1. backend を起動: `yarn dev:backend`
 2. dashboard を起動: `yarn dev:dashboard`
-3. ブラウザで `http://localhost:5173` を開く
+3. `fukaya-sus.lab` 系を引かせる場合は `yarn dev:dns` を起動
+4. `http://xxx.fukaya-sus.lab/` を開く場合は `yarn dev:proxy` を起動
+5. ブラウザで `http://localhost:5173` を開く
 
 ### 2.3 実運用確認時の前提
 - `execute` モードでは Docker が利用可能であること
 - GitHub から対象リポジトリにアクセスできること
 - 生成される公開設定を反映したい場合は DNS/Proxy 同期が動作すること
-- `fukaya-sus.lab` などをローカルで引かせる場合は、内蔵 DNS サーバーが `127.0.0.1:53` で待ち受けられること
+- `fukaya-sus.lab` などをローカルで引かせる場合は、backend の `1053` 番と `yarn dev:dns` の前段公開、または権限付き `53` bind のどちらかが必要
 
 ## 3. ダッシュボード全体の構成
 
