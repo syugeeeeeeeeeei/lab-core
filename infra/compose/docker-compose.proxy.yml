@@ -4,7 +4,7 @@ services:
   proxy:
     image: caddy:2-alpine
     ports:
-      - "127.0.0.1:80:80/tcp"
+      - "${LAB_CORE_PROXY_HTTP_BIND:-127.0.0.1:80}:80/tcp"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

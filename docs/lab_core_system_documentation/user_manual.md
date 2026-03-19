@@ -16,18 +16,23 @@
 ## 2. 起動とアクセス
 
 ### 2.1 初回セットアップ
+初期設定と起動手順は、以下の専用ドキュメントを優先してください。
+
+- ローカル開発: `setup_localhost.md`
+- 本番運用: `setup_production_192.168.11.224.md`
+
+### 2.2 標準起動
+現在の推奨起動:
+
 1. リポジトリルートで `yarn install`
 2. 設定ウィザードを実行: `yarn config:init`
-
-### 2.2 開発時の起動
-1. backend を起動: `yarn dev:backend`
-2. dashboard を起動: `yarn dev:dashboard`
-3. `fukaya-sus.lab` 系を引かせる場合は `yarn dev:dns` を起動
-4. `http://xxx.fukaya-sus.lab/` を開く場合は `yarn dev:proxy` を起動
-5. ブラウザで `http://localhost:5173` を開く
+3. `yarn dev`
+4. ブラウザで `http://dashboard.<LAB_CORE_ROOT_DOMAIN>/` を開く
 
 補足:
-- ホームの DNS カードに `53番前段: 未応答` と出ている場合は `yarn dev:dns` を起動してください
+
+- `yarn dev` は backend / dashboard / proxy / DNS をまとめて起動します
+- 旧来の個別起動 (`yarn dev:backend`, `yarn dev:dashboard`) も残っています
 
 ### 2.3 実運用確認時の前提
 - `execute` モードでは Docker が利用可能であること

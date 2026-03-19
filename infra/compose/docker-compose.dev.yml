@@ -2,24 +2,12 @@ services:
   backend:
     image: node:20-alpine
     working_dir: /workspace
-    command: sh -lc "yarn install && yarn dev:backend"
+    command: sh -lc "apk add --no-cache git docker-cli && yarn install && yarn dev:backend"
     volumes:
       - ../../:/workspace
-    environment:
-      LAB_CORE_PORT: "7300"
-      LAB_CORE_DB_PATH: "/workspace/core/backend/data/database.sqlite"
-      LAB_CORE_APPS_ROOT: "/workspace/runtime/apps"
-      LAB_CORE_APPDATA_ROOT: "/workspace/runtime/appdata"
-      LAB_CORE_PROXY_CONFIG_PATH: "/workspace/core/backend/data/generated/Caddyfile"
-      LAB_CORE_DNS_HOSTS_PATH: "/workspace/core/backend/data/generated/fukaya-sus.hosts"
-      LAB_CORE_SYNC_DIR: "/workspace/core/backend/data/generated"
-      LAB_CORE_DNS_SERVER_ENABLED: "true"
-      LAB_CORE_DNS_BIND_HOST: "0.0.0.0"
-      LAB_CORE_DNS_PORT: "53"
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "7300:7300"
-      - "127.0.0.1:53:53/tcp"
-      - "127.0.0.1:53:53/udp"
 
   dashboard:
     image: node:20-alpine

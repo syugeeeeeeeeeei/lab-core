@@ -4,7 +4,7 @@
 
 ## 1. backend が起動しない
 症状:
-`listen EPERM` やポート競合エラーで `yarn dev:backend` が失敗する
+`listen EPERM` やポート競合エラーで backend が失敗する
 
 確認:
 - 他プロセスが同じポートを使っていないか
@@ -23,7 +23,7 @@
 - Dashboard の API 接続先（`VITE_API_BASE_URL`）が正しいか
 
 対処:
-1. `yarn dev:backend` を起動
+1. `yarn dev` を起動
 2. `http://localhost:7300/health` が成功することを確認
 3. 必要なら `VITE_API_BASE_URL` を修正して dashboard を再起動
 
@@ -86,8 +86,8 @@
 - 生成先パスが `.env` で正しいか
 - 使っている hostname が内蔵 DNS または外部 DNS で名前解決できるか
 - backend の DNS サーバーが `.env` のポートで待受できているか
-- ローカル開発なら `yarn dev:dns` が起動しているか
-- ローカル開発で HTTP アクセスするなら `yarn dev:proxy` が起動しているか
+- ローカル開発なら `yarn dev` が起動しているか
+- 個別起動しているなら `yarn dev:dns` と `yarn dev:proxy` が起動しているか
 
 対処:
 1. 「DNS/Proxy 同期」を再実行

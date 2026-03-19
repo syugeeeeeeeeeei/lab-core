@@ -10,17 +10,47 @@
 ## 開発開始
 1. `yarn install`
 2. 初回設定ウィザード: `yarn config:init`
-3. `yarn dev`
+3. ローカル開発なら `yarn dev`
 
-`yarn dev` は kernel 相当の開発起動を行い、backend / dashboard / proxy / DNS をまとめて立ち上げます。
+## インストレーション要約
 
-主なアクセス先:
-- `http://dashboard.<LAB_CORE_ROOT_DOMAIN>/`
-- `http://api.<LAB_CORE_ROOT_DOMAIN>/`
+### ローカル開発（localhost / `lab.localhost`）
 
-旧来の個別起動も必要なら利用できます。
-- `yarn dev:backend`
-- `yarn dev:dashboard`
+1. `yarn install`
+2. `yarn config:init`
+3. プロファイルで `local` を選ぶ
+4. `yarn dev`
+5. `http://dashboard.lab.localhost/` を開く
+
+詳細手順:
+- `docs/lab_core_system_documentation/setup_localhost.md`
+
+### 本番環境（`192.168.11.224` / `fukaya-sus.lab`）
+
+1. 本番ホストへリポジトリを配置
+2. `yarn install`
+3. `yarn config:init`
+4. プロファイルで `lab` を選ぶ
+5. 次を実行
+
+```bash
+LAB_CORE_PROXY_HTTP_BIND=0.0.0.0:80 \
+LAB_CORE_DNS_BIND=0.0.0.0:53 \
+yarn dev
+```
+
+6. `http://dashboard.fukaya-sus.lab/` を開く
+
+詳細手順:
+- `docs/lab_core_system_documentation/setup_production_192.168.11.224.md`
+
+## 補足
+
+- `yarn dev` は kernel 相当の起動を行い、backend / dashboard / proxy / DNS をまとめて立ち上げます。
+- API の主確認先は `http://api.<LAB_CORE_ROOT_DOMAIN>/api` です。
+- 旧来の個別起動も必要なら利用できます。
+  - `yarn dev:backend`
+  - `yarn dev:dashboard`
 
 ## 検証コマンド
 - ビルド確認: `yarn build`
@@ -33,6 +63,8 @@
 
 ## ドキュメント
 - 総合ドキュメント入口: `docs/lab_core_system_documentation/index.md`
+- ローカル開発セットアップ: `docs/lab_core_system_documentation/setup_localhost.md`
+- 本番セットアップ: `docs/lab_core_system_documentation/setup_production_192.168.11.224.md`
 - kernel 構成案: `docs/lab_core_system_documentation/kernel_architecture.md`
 - ダッシュボード詳細マニュアル: `docs/lab_core_system_documentation/user_manual.md`
 - 既存の操作説明書: `docs/readmes/how_to_use_lab_core.md`

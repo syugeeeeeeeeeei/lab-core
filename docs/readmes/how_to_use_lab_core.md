@@ -9,12 +9,12 @@
 ## 2. 開発環境の起動
 1. リポジトリルートで `yarn install`
 2. 対話型設定: `yarn config:init`
-3. バックエンド起動: `yarn dev:backend`
-4. ダッシュボード起動: `yarn dev:dashboard`
-5. ブラウザで `http://localhost:5173` を開く
+3. 標準起動: `yarn dev`
+4. ブラウザで `http://dashboard.<LAB_CORE_ROOT_DOMAIN>/` を開く
 
 補足:
 - backend は `core/backend/.env` を起動時に自動読込します。
+- 詳細な初期設定は `docs/lab_core_system_documentation/setup_localhost.md` と `docs/lab_core_system_documentation/setup_production_192.168.11.224.md` を参照してください。
 - 設定を初期化したい場合は `yarn config:reset` を使用してください。
 - 開発データと起動中コンテナをまとめて初期化したい場合は `yarn maintenance:reset` を使い、確認後に `yarn maintenance:reset:yes` を実行してください。
 
