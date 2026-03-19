@@ -2,7 +2,7 @@ services:
   deps:
     image: node:20-alpine
     working_dir: /workspace
-    command: sh -lc "apk add --no-cache git docker-cli python3 make g++ && yarn install --frozen-lockfile --non-interactive"
+    command: sh -lc "apk add --no-cache git docker-cli docker-cli-compose python3 make g++ && yarn install --frozen-lockfile --non-interactive"
     volumes:
       - ../../:/workspace
       - labcore_node_modules:/workspace/node_modules
@@ -10,7 +10,7 @@ services:
   backend:
     image: node:20-alpine
     working_dir: /workspace
-    command: sh -lc "apk add --no-cache git docker-cli && yarn dev:backend"
+    command: sh -lc "apk add --no-cache git docker-cli docker-cli-compose && yarn dev:backend"
     volumes:
       - ../../:/workspace
       - labcore_node_modules:/workspace/node_modules
