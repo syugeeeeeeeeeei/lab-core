@@ -151,6 +151,7 @@ yarn lab:down-clean
 ```
 
 このコマンドは内部で先に `yarn lab:down` を実行してから初期化します。
+あわせて、runtime 配下で動く登録済みアプリの compose project も停止・削除します。
 
 ### 6.3 ログ確認
 

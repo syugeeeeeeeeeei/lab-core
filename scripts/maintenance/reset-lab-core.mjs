@@ -113,6 +113,35 @@ function listLabCoreProjects() {
   );
 }
 
+function listRuntimeComposeProjects(appsRoot) {
+  const runtimeAppsSuffix = `/${path.relative(rootDir, appsRoot).replace(/\\/g, "/").replace(/^\/+/, "")}/`;
+  const projectLines = dockerOutput([
+    "ps",
+    "-a",
+    "--filter",
+    "label=com.docker.compose.project",
+    "--format",
+    "{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}"
+  ]);
+
+  return listUnique(
+    projectLines
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const [projectName, workingDir = ""] = line.split("|");
+        return {
+          projectName: projectName?.trim() ?? "",
+          workingDir: workingDir.trim()
+        };
+      })
+      .filter((entry) => entry.projectName.length > 0)
+      .filter((entry) => entry.workingDir.startsWith(appsRoot) || entry.workingDir.replace(/\\/g, "/").includes(runtimeAppsSuffix))
+      .map((entry) => entry.projectName)
+  );
+}
+
 function listProjectContainers(projectName) {
   return listUnique(
     dockerOutput([
@@ -269,7 +298,9 @@ if (await checkPortOpen(5173)) {
   runningPorts.push("dashboard port 5173");
 }
 
-const projects = listLabCoreProjects();
+const helperProjects = listLabCoreProjects();
+const runtimeProjects = listRuntimeComposeProjects(config.appsRoot);
+const projects = listUnique([...helperProjects, ...runtimeProjects]);
 const containerIds = listUnique(projects.flatMap((projectName) => listProjectContainers(projectName)));
 const networkIds = listUnique(projects.flatMap((projectName) => listProjectNetworks(projectName)));
 const volumeNames = listUnique(projects.flatMap((projectName) => listProjectVolumes(projectName)));
@@ -281,7 +312,8 @@ const previewLines = [
   `- Runtime apps dir: ${config.appsRoot}`,
   `- Runtime data dir: ${config.appDataRoot}`,
   `- Docker compose helper stacks: ${composeStacks.length}`,
-  `- Docker compose projects: ${projects.length > 0 ? projects.join(", ") : "(none)"}`,
+  `- Docker compose helper projects: ${helperProjects.length > 0 ? helperProjects.join(", ") : "(none)"}`,
+  `- Runtime app projects: ${runtimeProjects.length > 0 ? runtimeProjects.join(", ") : "(none)"}`,
   `- Docker containers to remove: ${containerIds.length}`,
   `- Docker networks to remove: ${networkIds.length}`,
   `- Docker volumes to remove: ${volumeNames.length}`,

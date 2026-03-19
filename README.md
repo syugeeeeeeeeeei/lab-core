@@ -44,6 +44,7 @@
 - 本番向けの起動は `yarn lab:up` / `yarn lab:down` を使います。
 - `.env` を残して runtime / DB / generated / 管理下 Docker 資産を初期化したい時は `yarn lab:down-clean` を使います。
   このコマンドは先に `yarn lab:down` を実行してから初期化します。
+  runtime 配下で動く登録済みアプリの compose project も停止・削除対象です。
 - 本番のログ確認は `yarn lab:logs` を使うと backend / dashboard / proxy / DNS をまとめて追えます。
 - API の主確認先は `http://api.<LAB_CORE_ROOT_DOMAIN>/api` です。
 - 旧来の個別起動も必要なら利用できます。
