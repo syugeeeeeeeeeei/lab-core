@@ -99,7 +99,27 @@
 5. `connect ECONNREFUSED 127.0.0.1:80` の場合は `yarn dev:proxy` を起動し、必要なら `yarn dev:proxy:refresh` を実行する
 6. 外部 DNS を使う運用なら、生成された DNS レコードファイルをその DNS に反映する
 
-## 8.1 `DNS Resolution Failed ... ECONNREFUSED`
+## 8.1 proxy が `File to import not found: /data/generated/Caddyfile.dev` で落ちる
+症状:
+`yarn lab:logs` や `yarn dev:proxy:logs` に次が出る
+
+`Error: adapting config using caddyfile: File to import not found: /data/generated/Caddyfile.dev`
+
+原因:
+- backend が生成物を書き出す前に proxy が先に起動した
+- 旧 `.env` が `/opt/lab-core/...` の旧パスを指していた
+
+対処:
+1. まず `yarn lab:down`
+2. 次に `yarn lab:up`
+3. その後 `yarn lab:logs` で proxy を含めて再確認
+4. `.env` が古い場合は `yarn config:reset` で `lab` を選び直す
+
+補足:
+- 現在は起動前に `core/backend/data/generated/Caddyfile.dev` のプレースホルダを自動生成します
+- 旧 wizard 由来の `/opt/lab-core/apps` などは backend 側で現行パスへ互換変換されます
+
+## 8.2 `DNS Resolution Failed ... ECONNREFUSED`
 症状:
 ブラウザで次のような表示になる
 

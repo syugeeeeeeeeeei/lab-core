@@ -100,6 +100,7 @@ yarn config:init
 - `LAB_CORE_ROOT_DOMAIN=fukaya-sus.lab`
 - `LAB_CORE_DNS_BIND_HOST=0.0.0.0`
 - `LAB_CORE_DNS_PORT=53`
+- アプリ配置先や生成物は現在の実装に合わせてリポジトリ直下の `runtime/` と `core/backend/data/generated/` を使う
 
 確認ファイル:
 
@@ -126,6 +127,7 @@ yarn lab:up
 補足:
 
 - 旧名の `yarn dev:lab` / `yarn dev:lab:down` / `yarn dev:lab:logs` も互換用に残しています
+- 既存の `.env` が旧 wizard 由来で `/opt/lab-core/apps` や `/opt/lab-core/core/proxy/Caddyfile.generated` を指していても、現在は backend 側で互換変換されます
 
 ### 6.2 停止
 
@@ -133,6 +135,20 @@ yarn lab:up
 cd /opt/lab-core
 yarn lab:down
 ```
+
+### 6.3 ログ確認
+
+```bash
+cd /opt/lab-core
+yarn lab:logs
+```
+
+このコマンドは次をまとめて表示します。
+
+- backend
+- dashboard
+- proxy
+- DNS
 
 ## 7. 初期確認
 
@@ -276,7 +292,6 @@ yarn install
 
 現在の本番手順には次の制約があります。
 
-- 起動コマンド名はまだ `dev` 系です
 - control-plane 専用の immutable イメージ運用にはなっていません
 - systemd や専用 production compose に分離された最終形ではありません
 

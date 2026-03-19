@@ -1,11 +1,35 @@
 import fs from "node:fs";
 import path from "node:path";
 
+function rewriteLegacyPath(baseDir: string, value: string): string {
+  const legacyMappings = new Map<string, string>([
+    ["/opt/lab-core/apps", "./runtime/apps"],
+    ["/opt/lab-core/appdata", "./runtime/appdata"],
+    ["/opt/lab-core/core/proxy/Caddyfile.generated", "./core/backend/data/generated/Caddyfile"],
+    ["/opt/lab-core/core/dns/fukaya-sus.hosts.generated", "./core/backend/data/generated/fukaya-sus.hosts"],
+    ["/opt/lab-core/core/generated", "./core/backend/data/generated"]
+  ]);
+
+  const mapped = legacyMappings.get(value);
+  if (!mapped) {
+    return value;
+  }
+
+  return path.resolve(baseDir, mapped);
+}
+
 function toAbsolutePath(baseDir: string, value: string): string {
+  const rewritten = rewriteLegacyPath(baseDir, value);
+
+  if (path.isAbsolute(rewritten)) {
+    return rewritten;
+  }
+
   if (path.isAbsolute(value)) {
     return value;
   }
-  return path.resolve(baseDir, value);
+
+  return path.resolve(baseDir, rewritten);
 }
 
 function findProjectRoot(startDir: string): string {

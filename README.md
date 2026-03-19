@@ -42,6 +42,7 @@
 
 - `yarn dev` は kernel 相当の起動を行い、backend / dashboard / proxy / DNS をまとめて立ち上げます。
 - 本番向けの起動は `yarn lab:up` / `yarn lab:down` を使います。
+- 本番のログ確認は `yarn lab:logs` を使うと backend / dashboard / proxy / DNS をまとめて追えます。
 - API の主確認先は `http://api.<LAB_CORE_ROOT_DOMAIN>/api` です。
 - 旧来の個別起動も必要なら利用できます。
   - `yarn dev:backend`
