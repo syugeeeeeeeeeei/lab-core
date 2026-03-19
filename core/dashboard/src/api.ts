@@ -1,4 +1,6 @@
 import type {
+  ApplicationComposeInspection,
+  ApplicationDetail,
   ApplicationListItem,
   ApplicationLogsResponse,
   CreateApplicationResponse,
@@ -8,7 +10,8 @@ import type {
   ImportResolveResponse,
   RegistrationFixture,
   SystemEvent,
-  SystemStatus
+  SystemStatus,
+  UpdateDeploymentPayload
 } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:7300";
@@ -51,6 +54,27 @@ export async function createApplication(payload: CreateApplicationPayload): Prom
   return requestJson<CreateApplicationResponse>("/api/applications", {
     method: "POST",
     body: JSON.stringify(payload)
+  });
+}
+
+export async function fetchApplicationDetail(applicationId: string): Promise<ApplicationDetail> {
+  return requestJson<ApplicationDetail>(`/api/applications/${applicationId}`);
+}
+
+export async function updateApplicationDeployment(applicationId: string, payload: UpdateDeploymentPayload): Promise<void> {
+  await requestJson(`/api/applications/${applicationId}/deployment`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function inspectApplicationDeploymentCompose(
+  applicationId: string,
+  composePath: string
+): Promise<ApplicationComposeInspection> {
+  return requestJson<ApplicationComposeInspection>(`/api/applications/${applicationId}/deployment/inspect`, {
+    method: "POST",
+    body: JSON.stringify({ composePath })
   });
 }
 

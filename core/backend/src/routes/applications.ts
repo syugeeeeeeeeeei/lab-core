@@ -10,11 +10,13 @@ import {
   executeDeleteJob,
   executeDeployJob,
   executeRebuildJob,
+  reconcileDeploymentRouting,
   executeRestartJob,
   executeRollbackJob,
   executeUpdateJob
 } from "../services/application-jobs.js";
 import { recordEvent } from "../services/events.js";
+import { syncInfrastructure } from "../services/infrastructure-sync.js";
 import { createJob, finishJob, startJob } from "../services/jobs.js";
 
 const createApplicationSchema = z.object({
@@ -45,12 +47,28 @@ const inspectComposeSchema = z.object({
   composePath: z.string().min(1).max(400)
 });
 
+const inspectLocalComposeSchema = z.object({
+  composePath: z.string().min(1).max(400)
+});
+
 const rebuildSchema = z.object({
   keepData: z.boolean().optional().default(true)
 });
 
 const deleteSchema = z.object({
   mode: z.enum(["config_only", "source_and_config", "full"]).optional().default("config_only")
+});
+
+const updateDeploymentSchema = z.object({
+  composePath: z.string().min(1).max(400),
+  publicServiceName: z.string().min(1).max(120),
+  publicPort: z.number().int().min(1).max(65535),
+  hostname: z
+    .string()
+    .min(3)
+    .max(255)
+    .regex(/^[a-z0-9.-]+$/),
+  keepVolumesOnRebuild: z.boolean().optional()
 });
 
 const insertApplicationStatement = db.prepare(`
@@ -158,6 +176,22 @@ type ComposeServiceCandidate = {
   detectedPublicPort: number | null;
   likelyPublic: boolean;
   reason: string;
+};
+
+type RepositoryMetadata = {
+  repositoryFiles: string[];
+  yamlFiles: string[];
+  composeCandidates: string[];
+  recommendedComposePath: string | null;
+};
+
+type ComposeInspectionResult = {
+  composeCandidates: string[];
+  yamlFiles: string[];
+  recommendedComposePath: string | null;
+  selectedComposePath: string;
+  services: ComposeServiceCandidate[];
+  warning?: string;
 };
 
 function decodeSegment(segment: string): string {
@@ -712,25 +746,163 @@ function parseComposeServices(content: string): ComposeServiceCandidate[] {
   });
 }
 
-function collectRepositoryMetadata(entries: GithubTreeEntry[]): {
-  repositoryFiles: string[];
-  yamlFiles: string[];
-  composeCandidates: string[];
-  recommendedComposePath: string | null;
-} {
-  const repositoryFiles = [...new Set(entries.map((entry) => entry.path))].sort((a, b) => a.localeCompare(b));
-  const yamlFiles = [...new Set(repositoryFiles.filter((filePath) => isYamlFile(filePath)))];
+function sortComposeServices(services: ComposeServiceCandidate[]): ComposeServiceCandidate[] {
+  return services.sort((a, b) => {
+    if (a.likelyPublic !== b.likelyPublic) {
+      return a.likelyPublic ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function collectRepositoryMetadataFromPaths(repositoryFiles: string[]): RepositoryMetadata {
+  const uniqueRepositoryFiles = [...new Set(repositoryFiles)].sort((a, b) => a.localeCompare(b));
+  const yamlFiles = [...new Set(uniqueRepositoryFiles.filter((filePath) => isYamlFile(filePath)))];
   const composeCandidates = [...new Set(yamlFiles.filter((filePath) => composeCandidateScore(filePath) > 0))].sort((a, b) => {
     const scoreDiff = composeCandidateScore(b) - composeCandidateScore(a);
     return scoreDiff !== 0 ? scoreDiff : a.localeCompare(b);
   });
 
   return {
-    repositoryFiles,
+    repositoryFiles: uniqueRepositoryFiles,
     yamlFiles,
     composeCandidates,
     recommendedComposePath: composeCandidates[0] ?? null
   };
+}
+
+function collectRepositoryMetadata(entries: GithubTreeEntry[]): RepositoryMetadata {
+  return collectRepositoryMetadataFromPaths(entries.map((entry) => entry.path));
+}
+
+function listLocalRepositoryFiles(repoPath: string): string[] {
+  const results: string[] = [];
+  const ignoredDirectories = new Set([".git", "node_modules", ".next", "dist", "build", "coverage", ".turbo"]);
+  const stack: string[] = [repoPath];
+
+  while (stack.length > 0) {
+    const currentDir = stack.pop()!;
+    const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const absolutePath = path.join(currentDir, entry.name);
+      const relativePath = path.relative(repoPath, absolutePath).replace(/\\/g, "/");
+
+      if (entry.isDirectory()) {
+        if (!ignoredDirectories.has(entry.name)) {
+          stack.push(absolutePath);
+        }
+        continue;
+      }
+
+      results.push(relativePath);
+    }
+  }
+
+  return results.sort((a, b) => a.localeCompare(b));
+}
+
+function buildFallbackServiceCandidate(serviceName: string, publicPort: number): ComposeServiceCandidate {
+  const normalizedPort = Number.isInteger(publicPort) && publicPort > 0 ? publicPort : 80;
+
+  return {
+    name: serviceName,
+    portOptions: [normalizedPort],
+    publishedPorts: [],
+    exposePorts: [normalizedPort],
+    detectedPublicPort: normalizedPort,
+    likelyPublic: true,
+    reason: "現在の保存済み設定を候補として表示しています。"
+  };
+}
+
+function inspectComposeFromLocalRepository(
+  repoPath: string,
+  composePath: string,
+  fallbackServiceName: string,
+  fallbackPort: number
+): ComposeInspectionResult {
+  if (!fs.existsSync(repoPath)) {
+    return {
+      composeCandidates: composePath.length > 0 ? [composePath] : [],
+      yamlFiles: composePath.length > 0 ? [composePath] : [],
+      recommendedComposePath: composePath.length > 0 ? composePath : null,
+      selectedComposePath: composePath,
+      services: [buildFallbackServiceCandidate(fallbackServiceName, fallbackPort)],
+      warning: "ローカルリポジトリがまだ取得されていないため、現在設定のみ表示しています。"
+    };
+  }
+
+  const metadata = collectRepositoryMetadataFromPaths(listLocalRepositoryFiles(repoPath));
+  const normalizedComposePath = composePath.trim().replace(/^\/+/, "");
+  const candidateSet = new Set(metadata.composeCandidates);
+  const yamlSet = new Set(metadata.yamlFiles);
+
+  if (normalizedComposePath.length > 0) {
+    if (isYamlFile(normalizedComposePath)) {
+      yamlSet.add(normalizedComposePath);
+    }
+    if (composeCandidateScore(normalizedComposePath) > 0) {
+      candidateSet.add(normalizedComposePath);
+    }
+  }
+
+  const composeCandidates = [...candidateSet].sort((a, b) => {
+    const scoreDiff = composeCandidateScore(b) - composeCandidateScore(a);
+    return scoreDiff !== 0 ? scoreDiff : a.localeCompare(b);
+  });
+  const yamlFiles = [...yamlSet].sort((a, b) => a.localeCompare(b));
+  const selectedComposePath = normalizedComposePath.length > 0
+    ? normalizedComposePath
+    : (composeCandidates[0] ?? metadata.recommendedComposePath ?? "");
+
+  if (selectedComposePath.length === 0) {
+    return {
+      composeCandidates,
+      yamlFiles,
+      recommendedComposePath: metadata.recommendedComposePath,
+      selectedComposePath: "",
+      services: [buildFallbackServiceCandidate(fallbackServiceName, fallbackPort)],
+      warning: "compose 候補を検出できなかったため、現在設定のみ表示しています。"
+    };
+  }
+
+  const composeFilePath = path.resolve(repoPath, selectedComposePath);
+  if (!fs.existsSync(composeFilePath)) {
+    return {
+      composeCandidates,
+      yamlFiles,
+      recommendedComposePath: metadata.recommendedComposePath,
+      selectedComposePath,
+      services: [buildFallbackServiceCandidate(fallbackServiceName, fallbackPort)],
+      warning: `compose ファイルが見つかりません: ${selectedComposePath}`
+    };
+  }
+
+  const content = fs.readFileSync(composeFilePath, "utf8");
+  return {
+    composeCandidates,
+    yamlFiles,
+    recommendedComposePath: metadata.recommendedComposePath,
+    selectedComposePath,
+    services: sortComposeServices(parseComposeServices(content))
+  };
+}
+
+function validateSelectedComposeService(
+  composeInspection: ComposeInspectionResult,
+  serviceName: string,
+  composePath: string
+): void {
+  const normalizedComposePath = composePath.trim().replace(/^\/+/, "");
+
+  if (composeInspection.selectedComposePath !== normalizedComposePath) {
+    throw new Error(`compose 候補に存在しません: ${composePath}`);
+  }
+
+  if (!composeInspection.services.some((service) => service.name === serviceName)) {
+    throw new Error(`compose 内に存在しないサービスです: ${serviceName}`);
+  }
 }
 
 async function inspectComposeFromRepository(
@@ -747,16 +919,10 @@ async function inspectComposeFromRepository(
   }
 
   const content = await fetchBlobContent(matchedEntry.url);
-  const services = parseComposeServices(content);
 
   return {
     composePath: normalizedPath,
-    services: services.sort((a, b) => {
-      if (a.likelyPublic !== b.likelyPublic) {
-        return a.likelyPublic ? -1 : 1;
-      }
-      return a.name.localeCompare(b.name);
-    })
+    services: sortComposeServices(parseComposeServices(content))
   };
 }
 
@@ -1016,7 +1182,19 @@ applicationsRouter.get("/:applicationId", (c) => {
         WHERE application_id = ?
       `
     )
-    .get(applicationId) as Record<string, unknown> | undefined;
+    .get(applicationId) as
+    | {
+        deployment_id: string;
+        compose_path: string;
+        public_service_name: string;
+        public_port: number;
+        hostname: string;
+        mode: string;
+        keep_volumes_on_rebuild: number;
+        device_requirements: string;
+        enabled: number;
+      }
+    | undefined;
 
   const routes = db
     .prepare(
@@ -1071,6 +1249,15 @@ applicationsRouter.get("/:applicationId", (c) => {
       }
     : null;
 
+  const composeInspection = normalizedDeployment
+    ? inspectComposeFromLocalRepository(
+        path.join(env.appsRoot, String(application.name)),
+        String(normalizedDeployment.compose_path),
+        String(normalizedDeployment.public_service_name),
+        Number(normalizedDeployment.public_port)
+      )
+    : null;
+
   const normalizedRoutes = (routes as Array<Record<string, unknown>>).map((route) => ({
     ...route,
     enabled: Boolean(route.enabled)
@@ -1079,10 +1266,204 @@ applicationsRouter.get("/:applicationId", (c) => {
   return c.json({
     application,
     deployment: normalizedDeployment,
+    composeInspection,
     routes: normalizedRoutes,
     containers,
     updateInfo: updateInfo ? { ...updateInfo, has_update: Boolean((updateInfo as Record<string, unknown>).has_update) } : null,
     events
+  });
+});
+
+applicationsRouter.post("/:applicationId/deployment/inspect", async (c) => {
+  const applicationId = c.req.param("applicationId");
+  const payload = await c.req.json().catch(() => null);
+  if (!payload) {
+    return c.json({ message: "JSON 形式で入力してください。" }, 400);
+  }
+
+  const parsed = inspectLocalComposeSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ message: "入力値が不正です。", issues: parsed.error.issues }, 400);
+  }
+
+  const application = db
+    .prepare(
+      `
+        SELECT a.name, d.public_service_name, d.public_port
+        FROM applications a
+        INNER JOIN deployments d ON d.application_id = a.application_id
+        WHERE a.application_id = ?
+      `
+    )
+    .get(applicationId) as
+    | {
+        name: string;
+        public_service_name: string;
+        public_port: number;
+      }
+    | undefined;
+
+  if (!application) {
+    return c.json({ message: "対象アプリが見つかりません。" }, 404);
+  }
+
+  const inspection = inspectComposeFromLocalRepository(
+    path.join(env.appsRoot, application.name),
+    parsed.data.composePath,
+    application.public_service_name,
+    application.public_port
+  );
+
+  return c.json(inspection);
+});
+
+applicationsRouter.patch("/:applicationId/deployment", async (c) => {
+  const applicationId = c.req.param("applicationId");
+  const payload = await c.req.json().catch(() => null);
+  if (!payload) {
+    return c.json({ message: "JSON 形式で入力してください。" }, 400);
+  }
+
+  const parsed = updateDeploymentSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ message: "入力値が不正です。", issues: parsed.error.issues }, 400);
+  }
+
+  const application = db
+    .prepare(
+      `
+        SELECT application_id, name
+        FROM applications
+        WHERE application_id = ?
+      `
+    )
+    .get(applicationId) as { application_id: string; name: string } | undefined;
+
+  if (!application) {
+    return c.json({ message: "対象アプリが見つかりません。" }, 404);
+  }
+
+  const currentDeployment = db
+    .prepare(
+      `
+        SELECT compose_path, public_service_name, public_port, hostname, keep_volumes_on_rebuild
+        FROM deployments
+        WHERE application_id = ?
+      `
+    )
+    .get(applicationId) as
+    | {
+        compose_path: string;
+        public_service_name: string;
+        public_port: number;
+        hostname: string;
+        keep_volumes_on_rebuild: number;
+      }
+    | undefined;
+
+  if (!currentDeployment) {
+    return c.json({ message: "対象アプリの配備設定が見つかりません。" }, 404);
+  }
+
+  const data = parsed.data;
+  const keepVolumesOnRebuild = data.keepVolumesOnRebuild ?? Boolean(currentDeployment.keep_volumes_on_rebuild);
+  const updatedAt = nowIso();
+  const repoPath = path.join(env.appsRoot, application.name);
+  const composeInspection = inspectComposeFromLocalRepository(
+    repoPath,
+    data.composePath,
+    currentDeployment.public_service_name,
+    currentDeployment.public_port
+  );
+
+  try {
+    validateSelectedComposeService(composeInspection, data.publicServiceName, data.composePath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "compose 候補の検証に失敗しました。";
+    return c.json({ message }, 400);
+  }
+
+  try {
+    db.transaction(() => {
+      db.prepare(
+        `
+          UPDATE deployments
+          SET compose_path = ?,
+              public_service_name = ?,
+              public_port = ?,
+              hostname = ?,
+              keep_volumes_on_rebuild = ?
+          WHERE application_id = ?
+        `
+      ).run(
+        data.composePath,
+        data.publicServiceName,
+        data.publicPort,
+        data.hostname,
+        keepVolumesOnRebuild ? 1 : 0,
+        applicationId
+      );
+
+      db.prepare(
+        `
+          UPDATE routes
+          SET hostname = ?,
+              upstream_container = ?,
+              upstream_port = ?
+          WHERE application_id = ?
+        `
+      ).run(data.hostname, data.publicServiceName, data.publicPort, applicationId);
+
+      db.prepare(
+        `
+          UPDATE applications
+          SET updated_at = ?
+          WHERE application_id = ?
+        `
+      ).run(updatedAt, applicationId);
+    })();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "不明なエラー";
+    if (message.includes("UNIQUE")) {
+      return c.json({ message: "同じホスト名の設定が既に存在します。" }, 409);
+    }
+    return c.json({ message: "配備設定の更新に失敗しました。", detail: message }, 500);
+  }
+
+  const composeFilePath = path.resolve(repoPath, data.composePath);
+  const routing = reconcileDeploymentRouting(applicationId, composeFilePath, data.publicServiceName, data.publicPort);
+  syncInfrastructure(`deployment-update:${application.name}`);
+
+  const requestedChanges: string[] = [];
+  if (currentDeployment.compose_path !== data.composePath) {
+    requestedChanges.push(`compose=${currentDeployment.compose_path} -> ${data.composePath}`);
+  }
+  if (currentDeployment.public_service_name !== data.publicServiceName || currentDeployment.public_port !== data.publicPort) {
+    requestedChanges.push(
+      `公開先=${currentDeployment.public_service_name}:${currentDeployment.public_port} -> ${data.publicServiceName}:${data.publicPort}`
+    );
+  }
+  if (currentDeployment.hostname !== data.hostname) {
+    requestedChanges.push(`host=${currentDeployment.hostname} -> ${data.hostname}`);
+  }
+  if (Boolean(currentDeployment.keep_volumes_on_rebuild) !== keepVolumesOnRebuild) {
+    requestedChanges.push(`keepVolumesOnRebuild=${keepVolumesOnRebuild}`);
+  }
+
+  recordEvent({
+    scope: "deployment",
+    applicationId,
+    level: routing.corrected ? "warning" : "info",
+    title: "配備設定を更新しました",
+    message: [
+      requestedChanges.length > 0 ? requestedChanges.join(", ") : "設定を保存しました。",
+      routing.reason
+    ].join(" | ")
+  });
+
+  return c.json({
+    message: routing.corrected ? `配備設定を更新しました。${routing.reason}` : "配備設定を更新しました。",
+    routing
   });
 });
 
@@ -1110,6 +1491,20 @@ applicationsRouter.post("/", async (c) => {
     normalizedImportInput = normalizeCreateImportInput(data.repositoryUrl, data.defaultBranch);
   } catch (error) {
     const message = error instanceof Error ? error.message : "GitHub URL の解釈に失敗しました。";
+    return c.json({ message }, 400);
+  }
+
+  try {
+    const inspection = await inspectComposeFromRepository(
+      normalizedImportInput.repositoryUrl,
+      normalizedImportInput.defaultBranch,
+      data.composePath
+    );
+    if (!inspection.services.some((service) => service.name === data.publicServiceName)) {
+      return c.json({ message: `選択された compose にサービス ${data.publicServiceName} が見つかりません。` }, 400);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "compose 解析に失敗しました。";
     return c.json({ message }, 400);
   }
 

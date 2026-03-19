@@ -66,7 +66,7 @@ export function ImportView(props: ImportViewProps) {
   const hasResolvedRepository = resolveState.canonicalRepositoryUrl.length > 0;
   const hasBranch = form.defaultBranch.trim().length > 0;
   const hasComposeSelection = form.composePath.trim().length > 0;
-  const hasComposeInspection = composeState.status === "ready" || composeState.status === "error";
+  const hasComposeInspection = composeState.status === "ready" && composeState.services.length > 0 && form.publicServiceName.trim().length > 0;
   const otherYamlFiles = resolveState.yamlFiles.filter((yamlPath) => !resolveState.composeCandidates.includes(yamlPath));
 
   return (
@@ -169,7 +169,7 @@ export function ImportView(props: ImportViewProps) {
                     ))}
                   </div>
                 ) : (
-                  <p className="hint">自動検出できなかったため、下の入力欄または YAML 一覧から選択してください。</p>
+                  <p className="hint warning">compose 候補を自動検出できませんでした。下の YAML 一覧から選択してください。</p>
                 )}
 
                 {otherYamlFiles.length > 0 ? (
@@ -192,21 +192,6 @@ export function ImportView(props: ImportViewProps) {
                     </div>
                   </div>
                 ) : null}
-
-                <label>
-                  composeファイルを手動指定
-                  <div className="inline-field">
-                    <input value={form.composePath} onChange={(event) => onFieldChange("composePath", event.target.value)} />
-                    <button
-                      type="button"
-                      className="button secondary"
-                      onClick={() => void onInspectCompose(form.composePath)}
-                      disabled={composeState.status === "inspecting" || form.composePath.trim().length === 0}
-                    >
-                      {composeState.status === "inspecting" ? "解析中..." : "compose解析"}
-                    </button>
-                  </div>
-                </label>
               </div>
             </section>
           ) : (
@@ -262,6 +247,14 @@ export function ImportView(props: ImportViewProps) {
             <section className="step-section">
               <p className="step-index">STEP 5</p>
               <h3>アプリ情報を入力して登録</h3>
+              <div className="resolve-panel">
+                <p>
+                  選択した compose: <code>{form.composePath}</code>
+                </p>
+                <p>
+                  選択した公開サービス: <code>{form.publicServiceName}</code>
+                </p>
+              </div>
               <div className="form-grid">
                 <label>
                   アプリ名
@@ -278,14 +271,6 @@ export function ImportView(props: ImportViewProps) {
                     placeholder={`app.${rootDomain}`}
                     value={form.hostname}
                     onChange={(event) => onFieldChange("hostname", event.target.value)}
-                  />
-                </label>
-                <label>
-                  公開サービス名
-                  <input
-                    required
-                    value={form.publicServiceName}
-                    onChange={(event) => onFieldChange("publicServiceName", event.target.value)}
                   />
                 </label>
                 <label>

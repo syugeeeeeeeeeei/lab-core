@@ -132,3 +132,77 @@ export type ApplicationLogsResponse = {
   fetchedAt: string;
   executionMode: "dry-run" | "execute";
 };
+
+export type ApplicationDeployment = {
+  deployment_id: string;
+  compose_path: string;
+  public_service_name: string;
+  public_port: number;
+  hostname: string;
+  mode: "standard" | "headless";
+  keep_volumes_on_rebuild: boolean;
+  device_requirements: string[];
+  enabled: boolean;
+};
+
+export type ApplicationRoute = {
+  route_id: string;
+  hostname: string;
+  upstream_container: string | null;
+  upstream_port: number;
+  enabled: boolean;
+};
+
+export type ApplicationContainerInstance = {
+  container_id: string;
+  service_name: string;
+  runtime_name: string;
+  health_state: string;
+  restart_count: number;
+  last_seen_at: string;
+};
+
+export type ApplicationUpdateInfo = {
+  current_commit: string | null;
+  latest_remote_commit: string | null;
+  has_update: boolean;
+  checked_at: string;
+};
+
+export type ApplicationComposeInspection = {
+  composeCandidates: string[];
+  yamlFiles: string[];
+  recommendedComposePath: string | null;
+  selectedComposePath: string;
+  services: ComposeServiceCandidate[];
+  warning?: string;
+};
+
+export type ApplicationDetail = {
+  application: {
+    application_id: string;
+    name: string;
+    description: string;
+    repository_url: string;
+    default_branch: string;
+    current_commit: string | null;
+    previous_commit: string | null;
+    status: string;
+    created_at: string;
+    updated_at: string;
+  };
+  deployment: ApplicationDeployment | null;
+  composeInspection: ApplicationComposeInspection | null;
+  routes: ApplicationRoute[];
+  containers: ApplicationContainerInstance[];
+  updateInfo: ApplicationUpdateInfo | null;
+  events: SystemEvent[];
+};
+
+export type UpdateDeploymentPayload = {
+  composePath: string;
+  publicServiceName: string;
+  publicPort: number;
+  hostname: string;
+  keepVolumesOnRebuild: boolean;
+};

@@ -383,7 +383,7 @@ function parseComposeServices(content: string): ComposeServiceInspection[] {
   });
 }
 
-function reconcileDeploymentRouting(
+export function reconcileDeploymentRouting(
   applicationId: string,
   composeFilePath: string,
   configuredServiceName: string,

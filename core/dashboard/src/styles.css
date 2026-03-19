@@ -676,14 +676,56 @@ td p {
   overflow: visible;
 }
 
-.detail-events-card {
+.deployment-form-grid {
+  margin-top: 4px;
+}
+
+.deployment-picker-section {
   display: grid;
   gap: 8px;
-  align-content: start;
+  margin-top: 10px;
+}
+
+.detail-checkbox-row {
+  margin-top: 12px;
+}
+
+.accordion-card {
+  display: grid;
+  gap: 0;
+  padding-top: 10px;
+}
+
+.accordion-toggle {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  color: inherit;
+}
+
+.accordion-toggle h2 {
+  margin-bottom: 4px;
+}
+
+.accordion-meta {
+  flex: 0 0 auto;
+  color: #4e6675;
+  font-weight: 700;
+}
+
+.accordion-body {
+  margin-top: 12px;
 }
 
 .detail-events-scroll {
-  max-height: 320px;
+  min-height: 240px;
+  max-height: 520px;
   overflow: auto;
   padding-right: 2px;
 }
@@ -696,6 +738,11 @@ td p {
   padding: 12px;
   border: 1px solid #283341;
   background: #0f141a;
+}
+
+.detail-log-viewer {
+  min-height: 340px;
+  max-height: 620px;
 }
 
 .log-empty {

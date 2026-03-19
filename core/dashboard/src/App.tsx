@@ -4,27 +4,33 @@ import {
   checkUpdate,
   createApplication,
   deleteApplication,
+  fetchApplicationDetail,
   fetchApplicationLogs,
   fetchApplicationLogServices,
   fetchApplications,
   fetchEvents,
   fetchSystemStatus,
+  inspectApplicationDeploymentCompose,
   inspectComposeFile,
   rebuildApplication,
   resolveImportSource,
   restartApplication,
   rollbackApplication,
-  syncInfrastructure
+  syncInfrastructure,
+  updateApplicationDeployment
 } from "./api";
 import { DashboardShell, type DashboardView } from "./components/DashboardShell";
 import type {
+  ApplicationComposeInspection,
+  ApplicationDetail,
   ApplicationListItem,
   ComposeServiceCandidate,
   CreateApplicationPayload,
   DeleteMode,
   ImportResolveResponse,
   SystemEvent,
-  SystemStatus
+  SystemStatus,
+  UpdateDeploymentPayload
 } from "./types";
 import { ApplicationDetailView, type DetailLogState } from "./views/ApplicationDetailView";
 import { ApplicationsView } from "./views/ApplicationsView";
@@ -32,6 +38,7 @@ import { HomeView } from "./views/HomeView";
 import { ImportView, type ImportComposeState, type ImportFormState, type ImportResolveState } from "./views/ImportView";
 
 const AUTO_REFRESH_MS = 15000;
+const DETAIL_AUTO_REFRESH_MS = 10000;
 const LOG_AUTO_REFRESH_MS = 5000;
 const TOAST_DURATION_MS = 4800;
 
@@ -77,6 +84,40 @@ const initialLogState: DetailLogState = {
   autoScroll: true
 };
 
+type DeploymentFormState = {
+  composePath: string;
+  publicServiceName: string;
+  publicPort: string;
+  hostname: string;
+  keepVolumesOnRebuild: boolean;
+};
+
+const initialDeploymentForm: DeploymentFormState = {
+  composePath: "docker-compose.yml",
+  publicServiceName: "web",
+  publicPort: "3000",
+  hostname: "",
+  keepVolumesOnRebuild: true
+};
+
+type DeploymentComposeState = {
+  status: "idle" | "loading" | "ready" | "error";
+  composeCandidates: string[];
+  yamlFiles: string[];
+  services: ComposeServiceCandidate[];
+  selectedComposePath: string;
+  warning: string;
+};
+
+const initialDeploymentComposeState: DeploymentComposeState = {
+  status: "idle",
+  composeCandidates: [],
+  yamlFiles: [],
+  services: [],
+  selectedComposePath: "",
+  warning: ""
+};
+
 function buildCreatePayload(form: ImportFormState, deviceRequirementsRaw: string): CreateApplicationPayload {
   return {
     name: form.name,
@@ -96,6 +137,46 @@ function buildCreatePayload(form: ImportFormState, deviceRequirementsRaw: string
   };
 }
 
+function buildDeploymentForm(detail: ApplicationDetail | null): DeploymentFormState {
+  const deployment = detail?.deployment;
+  if (!deployment) {
+    return initialDeploymentForm;
+  }
+
+  return {
+    composePath: deployment.compose_path,
+    publicServiceName: deployment.public_service_name,
+    publicPort: String(deployment.public_port),
+    hostname: deployment.hostname,
+    keepVolumesOnRebuild: deployment.keep_volumes_on_rebuild
+  };
+}
+
+function buildDeploymentPayload(form: DeploymentFormState): UpdateDeploymentPayload {
+  return {
+    composePath: form.composePath.trim().length > 0 ? form.composePath.trim() : "docker-compose.yml",
+    publicServiceName: form.publicServiceName.trim(),
+    publicPort: Number(form.publicPort),
+    hostname: form.hostname.trim(),
+    keepVolumesOnRebuild: form.keepVolumesOnRebuild
+  };
+}
+
+function buildDeploymentComposeState(inspection: ApplicationComposeInspection | null): DeploymentComposeState {
+  if (!inspection) {
+    return initialDeploymentComposeState;
+  }
+
+  return {
+    status: "ready",
+    composeCandidates: inspection.composeCandidates,
+    yamlFiles: inspection.yamlFiles,
+    services: inspection.services,
+    selectedComposePath: inspection.selectedComposePath,
+    warning: inspection.warning ?? ""
+  };
+}
+
 function chooseRecommendedService(services: ComposeServiceCandidate[]): ComposeServiceCandidate | null {
   return (
     services.find((service) => service.likelyPublic && service.detectedPublicPort !== null) ??
@@ -112,11 +193,16 @@ export function App() {
   const [system, setSystem] = useState<SystemStatus | null>(null);
   const [applications, setApplications] = useState<ApplicationListItem[]>([]);
   const [events, setEvents] = useState<SystemEvent[]>([]);
+  const [detail, setDetail] = useState<ApplicationDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const [form, setForm] = useState<ImportFormState>(initialImportForm);
   const [resolveState, setResolveState] = useState<ImportResolveState>(initialResolveState);
   const [composeState, setComposeState] = useState<ImportComposeState>(initialComposeState);
   const [deviceRequirementsRaw, setDeviceRequirementsRaw] = useState("");
+  const [deploymentForm, setDeploymentForm] = useState<DeploymentFormState>(initialDeploymentForm);
+  const [deploymentComposeState, setDeploymentComposeState] = useState<DeploymentComposeState>(initialDeploymentComposeState);
+  const [deploymentDirty, setDeploymentDirty] = useState(false);
 
   const [logs, setLogs] = useState<DetailLogState>(initialLogState);
   const [deleteMode, setDeleteMode] = useState<DeleteMode>("config_only");
@@ -166,6 +252,36 @@ export function App() {
         setBusy(false);
       } else if (mode === "background") {
         setRefreshing(false);
+      }
+    }
+  }
+
+  async function reloadDetail(
+    applicationId: string,
+    options: { mode?: "manual" | "background"; syncDeploymentForm?: boolean } = {}
+  ): Promise<void> {
+    const mode = options.mode ?? "manual";
+
+    if (mode === "manual") {
+      setDetailLoading(true);
+    }
+
+    try {
+      const nextDetail = await fetchApplicationDetail(applicationId);
+      setDetail(nextDetail);
+
+      if (options.syncDeploymentForm) {
+        setDeploymentForm(buildDeploymentForm(nextDetail));
+        setDeploymentComposeState(buildDeploymentComposeState(nextDetail.composeInspection));
+        setDeploymentDirty(false);
+      }
+    } catch (error) {
+      if (mode !== "background") {
+        setErrorMessage(error instanceof Error ? error.message : "アプリ詳細の取得に失敗しました。");
+      }
+    } finally {
+      if (mode === "manual") {
+        setDetailLoading(false);
       }
     }
   }
@@ -224,11 +340,62 @@ export function App() {
     if (!applications.some((application) => application.application_id === selectedApplicationId)) {
       setSelectedApplicationId(null);
       setActiveView("apps");
+      setDetail(null);
+      setDetailLoading(false);
+      setDeploymentForm(initialDeploymentForm);
+      setDeploymentComposeState(initialDeploymentComposeState);
+      setDeploymentDirty(false);
       setLogs(initialLogState);
       setDeleteConfirmText("");
       setDeleteMode("config_only");
     }
   }, [applications, selectedApplicationId]);
+
+  useEffect(() => {
+    if (activeView !== "detail" || !selectedApplicationId) {
+      setDetail(null);
+      setDetailLoading(false);
+      setDeploymentForm(initialDeploymentForm);
+      setDeploymentComposeState(initialDeploymentComposeState);
+      setDeploymentDirty(false);
+      return;
+    }
+
+    void reloadDetail(selectedApplicationId, { mode: "manual", syncDeploymentForm: true });
+  }, [activeView, selectedApplicationId]);
+
+  useEffect(() => {
+    if (activeView !== "detail" || !selectedApplicationId) {
+      return;
+    }
+
+    const onDemandRefresh = () => {
+      if (document.visibilityState === "visible") {
+        void reloadDetail(selectedApplicationId, {
+          mode: "background",
+          syncDeploymentForm: !deploymentDirty
+        });
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void reloadDetail(selectedApplicationId, {
+          mode: "background",
+          syncDeploymentForm: !deploymentDirty
+        });
+      }
+    }, DETAIL_AUTO_REFRESH_MS);
+
+    window.addEventListener("focus", onDemandRefresh);
+    document.addEventListener("visibilitychange", onDemandRefresh);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onDemandRefresh);
+      document.removeEventListener("visibilitychange", onDemandRefresh);
+    };
+  }, [activeView, deploymentDirty, selectedApplicationId]);
 
   useEffect(() => {
     if (!selectedApplication || activeView !== "detail" || !logs.opened) {
@@ -263,6 +430,11 @@ export function App() {
   function openDetail(applicationId: string): void {
     setSelectedApplicationId(applicationId);
     setActiveView("detail");
+    setDetail(null);
+    setDetailLoading(false);
+    setDeploymentForm(initialDeploymentForm);
+    setDeploymentComposeState(initialDeploymentComposeState);
+    setDeploymentDirty(false);
     setLogs(initialLogState);
     setDeleteConfirmText("");
     setDeleteMode("config_only");
@@ -481,6 +653,114 @@ export function App() {
     }
   }
 
+  function onDeploymentFieldChange<K extends keyof DeploymentFormState>(key: K, value: DeploymentFormState[K]): void {
+    setDeploymentForm((prev) => ({ ...prev, [key]: value }));
+    setDeploymentDirty(true);
+  }
+
+  async function onSelectDeploymentCompose(composePath: string): Promise<void> {
+    if (!selectedApplicationId) {
+      return;
+    }
+
+    setDeploymentDirty(true);
+    setDeploymentComposeState((prev) => ({
+      ...prev,
+      status: "loading",
+      selectedComposePath: composePath,
+      warning: ""
+    }));
+    setDeploymentForm((prev) => ({ ...prev, composePath }));
+
+    try {
+      const inspection = await inspectApplicationDeploymentCompose(selectedApplicationId, composePath);
+      const recommendedService = chooseRecommendedService(inspection.services);
+
+      setDeploymentComposeState({
+        status: "ready",
+        composeCandidates: inspection.composeCandidates,
+        yamlFiles: inspection.yamlFiles,
+        services: inspection.services,
+        selectedComposePath: inspection.selectedComposePath,
+        warning: inspection.warning ?? ""
+      });
+      setDeploymentForm((prev) => {
+        const activeService = inspection.services.find((service) => service.name === prev.publicServiceName) ?? recommendedService;
+        return {
+          ...prev,
+          composePath: inspection.selectedComposePath,
+          publicServiceName: activeService?.name ?? prev.publicServiceName,
+          publicPort: String(activeService?.detectedPublicPort ?? prev.publicPort)
+        };
+      });
+    } catch (error) {
+      setDeploymentComposeState((prev) => ({
+        ...prev,
+        status: "error",
+        warning: error instanceof Error ? error.message : "compose 候補の取得に失敗しました。"
+      }));
+      setErrorMessage(error instanceof Error ? error.message : "compose 候補の取得に失敗しました。");
+    }
+  }
+
+  function onSelectDeploymentService(service: ComposeServiceCandidate): void {
+    setDeploymentForm((prev) => ({
+      ...prev,
+      publicServiceName: service.name,
+      publicPort: String(service.detectedPublicPort ?? prev.publicPort)
+    }));
+    setDeploymentDirty(true);
+  }
+
+  function resetDeploymentForm(): void {
+    setDeploymentForm(buildDeploymentForm(detail));
+    setDeploymentComposeState(buildDeploymentComposeState(detail?.composeInspection ?? null));
+    setDeploymentDirty(false);
+  }
+
+  async function saveDeploymentSettings(): Promise<void> {
+    if (!selectedApplicationId) {
+      return;
+    }
+
+    const payload = buildDeploymentPayload(deploymentForm);
+    if (payload.publicServiceName.length === 0) {
+      setErrorMessage("公開サービス名を入力してください。");
+      return;
+    }
+    if (
+      deploymentComposeState.services.length > 0 &&
+      !deploymentComposeState.services.some((service) => service.name === payload.publicServiceName)
+    ) {
+      setErrorMessage("公開サービスは候補から選択してください。");
+      return;
+    }
+    if (payload.hostname.length === 0) {
+      setErrorMessage("公開ホスト名を入力してください。");
+      return;
+    }
+    if (!Number.isInteger(payload.publicPort) || payload.publicPort < 1 || payload.publicPort > 65535) {
+      setErrorMessage("公開ポートは 1 から 65535 の整数で入力してください。");
+      return;
+    }
+
+    setBusy(true);
+    setActionMessage("");
+    setErrorMessage("");
+
+    try {
+      await updateApplicationDeployment(selectedApplicationId, payload);
+      setActionMessage("デプロイ設定を更新しました。");
+      await reload({ mode: "action" });
+      await reloadDetail(selectedApplicationId, { mode: "manual", syncDeploymentForm: true });
+      setDeploymentDirty(false);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "デプロイ設定の更新に失敗しました。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onDeleteSubmit(): Promise<void> {
     if (!selectedApplication) {
       return;
@@ -498,6 +778,10 @@ export function App() {
 
     setDeleteConfirmText("");
     setDeleteMode("config_only");
+    setDetail(null);
+    setDeploymentForm(initialDeploymentForm);
+    setDeploymentComposeState(initialDeploymentComposeState);
+    setDeploymentDirty(false);
     setLogs(initialLogState);
     setSelectedApplicationId(null);
     setActiveView("apps");
@@ -563,12 +847,21 @@ export function App() {
       {activeView === "detail" ? (
         <ApplicationDetailView
           application={selectedApplication}
-          events={events}
+          detail={detail}
+          detailLoading={detailLoading}
           loading={busy}
           logs={logs}
+          deploymentForm={deploymentForm}
+          deploymentComposeState={deploymentComposeState}
+          deploymentDirty={deploymentDirty}
           deleteMode={deleteMode}
           deleteConfirmText={deleteConfirmText}
           onBackToApplications={() => setActiveView("apps")}
+          onDeploymentFieldChange={onDeploymentFieldChange}
+          onSelectDeploymentCompose={(composePath) => void onSelectDeploymentCompose(composePath)}
+          onSelectDeploymentService={onSelectDeploymentService}
+          onResetDeployment={resetDeploymentForm}
+          onSaveDeployment={() => void saveDeploymentSettings()}
           onRestart={(applicationId, applicationName) =>
             void runAction(async () => restartApplication(applicationId), `${applicationName} を再起動しました。`)
           }
@@ -586,7 +879,6 @@ export function App() {
           }
           onOpenLogs={(application) => void openLogs(application)}
           onRefreshLogs={(service, tail) => void refreshLogs(service, tail)}
-          onCloseLogs={() => setLogs(initialLogState)}
           onSetSelectedLogService={(service) => setLogs((prev) => ({ ...prev, selectedService: service }))}
           onSetLogTail={(tail) => setLogs((prev) => ({ ...prev, tail }))}
           onSetAutoScroll={(enabled) => setLogs((prev) => ({ ...prev, autoScroll: enabled }))}
