@@ -2,7 +2,7 @@ services:
   backend:
     image: node:20-alpine
     working_dir: /workspace
-    command: sh -lc "apk add --no-cache git docker-cli && yarn install && yarn dev:backend"
+    command: sh -lc "apk add --no-cache git docker-cli && yarn install --frozen-lockfile --ignore-optional --non-interactive && yarn dev:backend"
     volumes:
       - ../../:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
@@ -12,7 +12,7 @@ services:
   dashboard:
     image: node:20-alpine
     working_dir: /workspace
-    command: sh -lc "yarn install && yarn dev:dashboard"
+    command: sh -lc "yarn install --frozen-lockfile --ignore-optional --non-interactive && yarn dev:dashboard"
     volumes:
       - ../../:/workspace
     environment:
