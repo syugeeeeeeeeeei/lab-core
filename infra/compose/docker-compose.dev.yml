@@ -1,30 +1,30 @@
 services:
   deps:
     image: node:20-alpine
-    working_dir: /workspace
+    working_dir: ${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}
     command: sh -lc "apk add --no-cache git docker-cli docker-cli-compose python3 make g++ && yarn install --frozen-lockfile --non-interactive"
     volumes:
-      - ../../:/workspace
-      - labcore_node_modules:/workspace/node_modules
+      - ${LAB_CORE_HOST_PROJECT_ROOT:-../../}:${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}
+      - labcore_node_modules:${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}/node_modules
 
   backend:
     image: node:20-alpine
-    working_dir: /workspace
+    working_dir: ${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}
     command: sh -lc "apk add --no-cache git docker-cli docker-cli-compose && yarn dev:backend"
     volumes:
-      - ../../:/workspace
-      - labcore_node_modules:/workspace/node_modules
+      - ${LAB_CORE_HOST_PROJECT_ROOT:-../../}:${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}
+      - labcore_node_modules:${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}/node_modules
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "7300:7300"
 
   dashboard:
     image: node:20-alpine
-    working_dir: /workspace
+    working_dir: ${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}
     command: sh -lc "yarn workspace @lab-core/dashboard build && yarn workspace @lab-core/dashboard preview --host 0.0.0.0 --port 4173"
     volumes:
-      - ../../:/workspace
-      - labcore_node_modules:/workspace/node_modules
+      - ${LAB_CORE_HOST_PROJECT_ROOT:-../../}:${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}
+      - labcore_node_modules:${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}/node_modules
     environment:
       VITE_DEV_PROXY_TARGET: "http://backend:7300"
     depends_on:
