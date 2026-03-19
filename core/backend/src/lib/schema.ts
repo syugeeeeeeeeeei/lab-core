@@ -1,5 +1,14 @@
 import type Database from "better-sqlite3";
 
+function ensureColumn(db: Database.Database, tableName: string, columnName: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+}
+
 export function applySchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS applications (
@@ -25,6 +34,7 @@ export function applySchema(db: Database.Database): void {
       mode TEXT NOT NULL,
       keep_volumes_on_rebuild INTEGER NOT NULL DEFAULT 1,
       device_requirements TEXT NOT NULL DEFAULT '[]',
+      env_overrides TEXT NOT NULL DEFAULT '{}',
       enabled INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY(application_id) REFERENCES applications(application_id) ON DELETE CASCADE
     );
@@ -87,4 +97,6 @@ export function applySchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_system_events_created_at ON system_events(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at DESC);
   `);
+
+  ensureColumn(db, "deployments", "env_overrides", "TEXT NOT NULL DEFAULT '{}'");
 }

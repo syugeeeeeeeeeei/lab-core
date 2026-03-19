@@ -15,6 +15,7 @@ export type RegistrationFixture = {
     mode: "standard" | "headless";
     keepVolumesOnRebuild: boolean;
     deviceRequirements: string[];
+    envOverrides: Record<string, string>;
   };
 };
 
@@ -33,7 +34,8 @@ export const registrationFixtures: RegistrationFixture[] = [
       hostname: `oruca-test.${env.rootDomain}`,
       mode: "standard",
       keepVolumesOnRebuild: true,
-      deviceRequirements: ["/dev/bus/usb"]
+      deviceRequirements: ["/dev/bus/usb"],
+      envOverrides: {}
     }
   },
   {
@@ -50,7 +52,8 @@ export const registrationFixtures: RegistrationFixture[] = [
       hostname: `homepage-test.${env.rootDomain}`,
       mode: "standard",
       keepVolumesOnRebuild: true,
-      deviceRequirements: []
+      deviceRequirements: [],
+      envOverrides: {}
     }
   },
   {
@@ -67,7 +70,8 @@ export const registrationFixtures: RegistrationFixture[] = [
       hostname: `api-test.${env.rootDomain}`,
       mode: "headless",
       keepVolumesOnRebuild: true,
-      deviceRequirements: []
+      deviceRequirements: [],
+      envOverrides: {}
     }
   }
 ];

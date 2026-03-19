@@ -1,5 +1,6 @@
-import type { FormEvent } from "react";
-import type { ComposeServiceCandidate } from "../types";
+import { useState, type FormEvent } from "react";
+import { ComposeInspectDialog } from "../components/ComposeInspectDialog";
+import type { ComposeServiceCandidate, ImportComposeInspectResponse } from "../types";
 
 export type ImportFormState = {
   name: string;
@@ -28,6 +29,7 @@ export type ImportResolveState = {
 
 export type ImportComposeState = {
   status: "idle" | "inspecting" | "ready" | "error";
+  inspection: ImportComposeInspectResponse | null;
   services: ComposeServiceCandidate[];
   warning: string;
 };
@@ -35,12 +37,14 @@ export type ImportComposeState = {
 type ImportViewProps = {
   form: ImportFormState;
   deviceRequirementsRaw: string;
+  environmentOverrides: Record<string, string>;
   resolveState: ImportResolveState;
   composeState: ImportComposeState;
   rootDomain: string;
   loading: boolean;
   onFieldChange: <K extends keyof ImportFormState>(key: K, value: ImportFormState[K]) => void;
   onDeviceRequirementsChange: (value: string) => void;
+  onEnvironmentOverrideChange: (name: string, value: string) => void;
   onResolveSource: () => Promise<void>;
   onInspectCompose: (composePath: string) => Promise<void>;
   onSelectService: (service: ComposeServiceCandidate) => void;
@@ -51,17 +55,20 @@ export function ImportView(props: ImportViewProps) {
   const {
     form,
     deviceRequirementsRaw,
+    environmentOverrides,
     resolveState,
     composeState,
     rootDomain,
     loading,
     onFieldChange,
     onDeviceRequirementsChange,
+    onEnvironmentOverrideChange,
     onResolveSource,
     onInspectCompose,
     onSelectService,
     onSubmit
   } = props;
+  const [inspectDialogOpen, setInspectDialogOpen] = useState(false);
 
   const hasResolvedRepository = resolveState.canonicalRepositoryUrl.length > 0;
   const hasBranch = form.defaultBranch.trim().length > 0;
@@ -207,9 +214,22 @@ export function ImportView(props: ImportViewProps) {
               <p className="step-index">STEP 4</p>
               <h3>composeファイルを解析してサービスを選ぶ</h3>
               <div className="resolve-panel">
-                <p>
-                  選択中: <code>{form.composePath}</code>
-                </p>
+                <div className="compose-summary-row">
+                  <p>
+                    選択中: <code>{form.composePath}</code>
+                  </p>
+                  {composeState.inspection ? (
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="取得した YAML と解析結果を表示"
+                      title="取得した YAML と解析結果を表示"
+                      onClick={() => setInspectDialogOpen(true)}
+                    >
+                      i
+                    </button>
+                  ) : null}
+                </div>
                 {composeState.warning ? <p className="hint warning">{composeState.warning}</p> : null}
                 {composeState.services.length > 0 ? (
                   <div className="service-grid">
@@ -230,6 +250,8 @@ export function ImportView(props: ImportViewProps) {
                   </div>
                 ) : composeState.status === "inspecting" ? (
                   <p className="hint">compose を解析しています。</p>
+                ) : composeState.inspection?.parseError ? (
+                  <p className="hint warning">YAML の parse に失敗しました。右上の i ボタンから raw YAML と parse error を確認できます。</p>
                 ) : (
                   <p className="hint">サービス候補がまだありません。compose解析を実行してください。</p>
                 )}
@@ -315,6 +337,41 @@ export function ImportView(props: ImportViewProps) {
                 />
               </label>
 
+              {composeState.inspection?.detectedDeviceRequirements.length ? (
+                <p className="hint">
+                  compose から自動検出: <code>{composeState.inspection.detectedDeviceRequirements.join(", ")}</code>
+                </p>
+              ) : null}
+
+              {composeState.inspection?.environmentRequirements.length ? (
+                <div className="env-override-section">
+                  <p className="hint">compose から検出した環境変数</p>
+                  <div className="env-override-grid">
+                    {composeState.inspection.environmentRequirements.map((requirement) => (
+                      <label key={requirement.name} className="env-override-card">
+                        <span>
+                          {requirement.name}
+                          {requirement.required ? " *" : ""}
+                        </span>
+                        <input
+                          value={environmentOverrides[requirement.name] ?? ""}
+                          onChange={(event) => onEnvironmentOverrideChange(requirement.name, event.target.value)}
+                          placeholder={requirement.defaultValue ?? "値を入力"}
+                        />
+                        <small className="hint">
+                          services: <code>{requirement.services.join(", ")}</code>
+                          {requirement.required
+                            ? " / 必須"
+                            : requirement.defaultValue !== null
+                              ? ` / 既定値: ${requirement.defaultValue}`
+                              : " / 任意"}
+                        </small>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               <p className="hint">
                 現在の設定ドメインは <code>{rootDomain}</code> です。別ドメインも登録できますが、
                 その場合は DNS または hosts で名前解決できるようにしてください。
@@ -333,6 +390,13 @@ export function ImportView(props: ImportViewProps) {
           )}
         </form>
       </section>
+
+      <ComposeInspectDialog
+        open={inspectDialogOpen}
+        title="Compose Inspection"
+        inspection={composeState.inspection}
+        onClose={() => setInspectDialogOpen(false)}
+      />
     </div>
   );
 }

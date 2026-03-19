@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
 import { nanoid } from "nanoid";
@@ -10,11 +11,30 @@ import {
   executeDeleteJob,
   executeDeployJob,
   executeRebuildJob,
+  executeResumeJob,
   reconcileDeploymentRouting,
   executeRestartJob,
   executeRollbackJob,
+  executeStopJob,
   executeUpdateJob
 } from "../services/application-jobs.js";
+import {
+  buildFallbackServiceCandidate as buildFallbackComposeServiceCandidate,
+  buildUnavailableComposeInspection,
+  composeCandidateScore,
+  collectRepositoryMetadataFromPaths as collectComposeRepositoryMetadataFromPaths,
+  isYamlFile,
+  inspectComposeFile,
+  inspectComposeYaml,
+  listLocalRepositoryFiles as listComposeLocalRepositoryFiles,
+  validateEnvironmentOverrides,
+  validateComposeServiceSelection
+} from "../services/compose-inspection.js";
+import type {
+  ComposeInspectionResult,
+  ComposeServiceCandidate,
+  RepositoryMetadata
+} from "../services/compose-inspection.js";
 import { recordEvent } from "../services/events.js";
 import { syncInfrastructure } from "../services/infrastructure-sync.js";
 import { createJob, finishJob, startJob } from "../services/jobs.js";
@@ -34,7 +54,8 @@ const createApplicationSchema = z.object({
     .regex(/^[a-z0-9.-]+$/),
   mode: z.enum(["standard", "headless"]).optional().default("standard"),
   keepVolumesOnRebuild: z.boolean().optional().default(true),
-  deviceRequirements: z.array(z.string().min(1)).optional().default([])
+  deviceRequirements: z.array(z.string().min(1)).optional().default([]),
+  envOverrides: z.record(z.string().min(1), z.string()).optional().default({})
 });
 
 const resolveImportSchema = z.object({
@@ -68,7 +89,8 @@ const updateDeploymentSchema = z.object({
     .min(3)
     .max(255)
     .regex(/^[a-z0-9.-]+$/),
-  keepVolumesOnRebuild: z.boolean().optional()
+  keepVolumesOnRebuild: z.boolean().optional(),
+  envOverrides: z.record(z.string().min(1), z.string()).optional().default({})
 });
 
 const insertApplicationStatement = db.prepare(`
@@ -97,8 +119,9 @@ const insertDeploymentStatement = db.prepare(`
     mode,
     keep_volumes_on_rebuild,
     device_requirements,
+    env_overrides,
     enabled
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const insertRouteStatement = db.prepare(`
@@ -139,6 +162,23 @@ function parseJsonSafely(value: string): string[] {
   }
 }
 
+function parseJsonObjectSafely(value: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
+        .map(([key, entryValue]) => [key, entryValue])
+    );
+  } catch {
+    return {};
+  }
+}
+
 type ParsedGithubImportSource = {
   sourceType: "tree" | "repository";
   canonicalRepositoryUrl: string;
@@ -166,32 +206,6 @@ type GithubTreeResponse = {
 type GithubBlobResponse = {
   content: string;
   encoding: string;
-};
-
-type ComposeServiceCandidate = {
-  name: string;
-  portOptions: number[];
-  publishedPorts: number[];
-  exposePorts: number[];
-  detectedPublicPort: number | null;
-  likelyPublic: boolean;
-  reason: string;
-};
-
-type RepositoryMetadata = {
-  repositoryFiles: string[];
-  yamlFiles: string[];
-  composeCandidates: string[];
-  recommendedComposePath: string | null;
-};
-
-type ComposeInspectionResult = {
-  composeCandidates: string[];
-  yamlFiles: string[];
-  recommendedComposePath: string | null;
-  selectedComposePath: string;
-  services: ComposeServiceCandidate[];
-  warning?: string;
 };
 
 function decodeSegment(segment: string): string {
@@ -322,6 +336,10 @@ function normalizeCreateImportInput(repositoryUrl: string, defaultBranch: string
   };
 }
 
+function normalizeGithubRepositoryUrl(repositoryUrl: string): string {
+  return parseGithubImportSource(repositoryUrl).canonicalRepositoryUrl;
+}
+
 function parseCanonicalGithubRepository(repositoryUrl: string): GithubRepositoryRef {
   const normalized = normalizeCreateImportInput(repositoryUrl, "main");
   const parsedUrl = new URL(normalized.repositoryUrl);
@@ -386,6 +404,28 @@ async function fetchRepositoryTree(repositoryUrl: string, branch: string): Promi
   }
 }
 
+async function withTemporaryGitClone<T>(
+  repositoryUrl: string,
+  branch: string,
+  run: (repoPath: string) => Promise<T>
+): Promise<T> {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "lab-core-remote-"));
+  const normalizedBranch = normalizeBranchInput(branch);
+
+  try {
+    await simpleGit().clone(repositoryUrl, tempRoot, [
+      "--depth",
+      "1",
+      "--branch",
+      normalizedBranch,
+      "--single-branch"
+    ]);
+    return await run(tempRoot);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
 async function fetchBlobContent(blobUrl: string): Promise<string> {
   const blob = await fetchGithubJson<GithubBlobResponse>(blobUrl);
   if (blob.encoding !== "base64") {
@@ -394,381 +434,19 @@ async function fetchBlobContent(blobUrl: string): Promise<string> {
   return Buffer.from(blob.content.replace(/\n/g, ""), "base64").toString("utf8");
 }
 
-function isYamlFile(pathValue: string): boolean {
-  return /\.ya?ml$/i.test(pathValue);
-}
-
-function composeCandidateScore(pathValue: string): number {
-  const normalized = pathValue.toLowerCase();
-  const basename = normalized.split("/").pop() ?? normalized;
-  let score = 0;
-
-  if (normalized.startsWith("docker-compose.")) {
-    score += 50;
+async function collectRepositoryMetadataFromRemote(repositoryUrl: string, branch: string): Promise<RepositoryMetadata> {
+  try {
+    const entries = await fetchRepositoryTree(repositoryUrl, branch);
+    return collectRepositoryMetadata(entries);
+  } catch {
+    return withTemporaryGitClone(repositoryUrl, branch, async (repoPath) =>
+      collectRepositoryMetadataFromPaths(listLocalRepositoryFiles(repoPath))
+    );
   }
-  if (normalized.startsWith("compose.")) {
-    score += 45;
-  }
-  if (basename === "docker-compose.yml" || basename === "docker-compose.yaml") {
-    score += 40;
-  }
-  if (basename === "compose.yml" || basename === "compose.yaml") {
-    score += 35;
-  }
-  if (basename.includes("compose")) {
-    score += 20;
-  }
-  if (!normalized.includes("/")) {
-    score += 15;
-  }
-
-  return score;
-}
-
-function parseInlineList(value: string): string[] {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
-    return [];
-  }
-
-  const inner = trimmed.slice(1, -1);
-  const items: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | null = null;
-
-  for (const char of inner) {
-    if ((char === "'" || char === '"') && quote === null) {
-      quote = char;
-      continue;
-    }
-    if (quote && char === quote) {
-      quote = null;
-      continue;
-    }
-    if (char === "," && quote === null) {
-      if (current.trim().length > 0) {
-        items.push(current.trim());
-      }
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-
-  if (current.trim().length > 0) {
-    items.push(current.trim());
-  }
-
-  return items.map((item) => item.trim().replace(/^['"]|['"]$/g, ""));
-}
-
-function stripYamlComment(line: string): string {
-  let result = "";
-  let quote: "'" | '"' | null = null;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    if ((char === "'" || char === '"') && quote === null) {
-      quote = char;
-      result += char;
-      continue;
-    }
-    if (quote && char === quote) {
-      quote = null;
-      result += char;
-      continue;
-    }
-    if (char === "#" && quote === null) {
-      break;
-    }
-    result += char;
-  }
-
-  return result.trimEnd();
-}
-
-function parseServiceKey(value: string): string | null {
-  const match = value.match(/^["']?([^"':]+)["']?:\s*$/);
-  return match ? match[1].trim() : null;
-}
-
-function parsePortNumber(value: string): number | null {
-  const match = value.match(/(\d+)/);
-  if (!match) {
-    return null;
-  }
-  const parsed = Number(match[1]);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function parseShortPortMapping(value: string): { target: number | null; published: number | null } {
-  const normalized = value.trim().replace(/^['"]|['"]$/g, "").replace(/\/(tcp|udp)$/i, "");
-  if (normalized.length === 0) {
-    return { target: null, published: null };
-  }
-
-  const directPort = parsePortNumber(normalized);
-  if (!normalized.includes(":")) {
-    return { target: directPort, published: null };
-  }
-
-  const segments = normalized.split(":");
-  const target = parsePortNumber(segments[segments.length - 1] ?? "");
-  let published: number | null = null;
-
-  for (let index = segments.length - 2; index >= 0; index -= 1) {
-    const parsed = parsePortNumber(segments[index] ?? "");
-    if (parsed !== null) {
-      published = parsed;
-      break;
-    }
-  }
-
-  return { target, published };
-}
-
-function chooseDetectedPort(portOptions: number[]): number | null {
-  const preferred = [80, 443, 3000, 8080, 8000, 5173, 4173, 5000, 8501, 8888];
-  for (const port of preferred) {
-    if (portOptions.includes(port)) {
-      return port;
-    }
-  }
-  return portOptions[0] ?? null;
-}
-
-function buildServiceReason(name: string, portOptions: number[], likelyPublic: boolean): string {
-  if (portOptions.length === 0) {
-    return "ports / expose から公開候補ポートを検出できませんでした。";
-  }
-  if (likelyPublic) {
-    return `サービス名 (${name}) と公開候補ポートから Web 公開候補と判断しました。`;
-  }
-  return "ports / expose から候補ポートを検出しました。";
-}
-
-function parseComposeServices(content: string): ComposeServiceCandidate[] {
-  const lines = content.replace(/\r/g, "").split("\n");
-  const services = new Map<string, { targetPorts: Set<number>; publishedPorts: Set<number>; exposePorts: Set<number> }>();
-
-  let inServices = false;
-  let servicesIndent = -1;
-  let currentService: string | null = null;
-  let currentServiceIndent = -1;
-  let currentSection: "ports" | "expose" | null = null;
-  let currentPortMap: { target: number | null; published: number | null } | null = null;
-  let currentPortItemIndent = -1;
-
-  function ensureService(name: string) {
-    if (!services.has(name)) {
-      services.set(name, {
-        targetPorts: new Set<number>(),
-        publishedPorts: new Set<number>(),
-        exposePorts: new Set<number>()
-      });
-    }
-    return services.get(name)!;
-  }
-
-  function finalizePortMap(): void {
-    if (!currentService || !currentPortMap) {
-      return;
-    }
-    const service = ensureService(currentService);
-    if (currentPortMap.target !== null) {
-      service.targetPorts.add(currentPortMap.target);
-    }
-    if (currentPortMap.published !== null) {
-      service.publishedPorts.add(currentPortMap.published);
-    }
-    currentPortMap = null;
-    currentPortItemIndent = -1;
-  }
-
-  for (const rawLine of lines) {
-    const line = stripYamlComment(rawLine.replace(/\t/g, "  "));
-    const trimmed = line.trim();
-    if (trimmed.length === 0) {
-      continue;
-    }
-
-    const indent = line.length - line.trimStart().length;
-
-    if (!inServices) {
-      if (trimmed === "services:") {
-        inServices = true;
-        servicesIndent = indent;
-      }
-      continue;
-    }
-
-    if (indent <= servicesIndent) {
-      finalizePortMap();
-      break;
-    }
-
-    if (currentPortMap && indent <= currentPortItemIndent) {
-      finalizePortMap();
-    }
-
-    const serviceKey = !trimmed.startsWith("- ") ? parseServiceKey(trimmed) : null;
-    if (serviceKey && indent > servicesIndent && (currentService === null || indent <= currentServiceIndent)) {
-      finalizePortMap();
-      currentService = serviceKey;
-      currentServiceIndent = indent;
-      currentSection = null;
-      ensureService(serviceKey);
-      continue;
-    }
-
-    if (!currentService) {
-      continue;
-    }
-
-    if (indent <= currentServiceIndent) {
-      finalizePortMap();
-      currentService = null;
-      currentSection = null;
-      continue;
-    }
-
-    if (!currentPortMap && !trimmed.startsWith("- ") && indent > currentServiceIndent) {
-      const keyMatch = trimmed.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
-      if (!keyMatch) {
-        currentSection = null;
-        continue;
-      }
-
-      const [, key, value] = keyMatch;
-      if (key !== "ports" && key !== "expose") {
-        currentSection = null;
-        continue;
-      }
-
-      currentSection = key;
-      const normalizedValue = value.trim();
-      const service = ensureService(currentService);
-      if (normalizedValue.length > 0) {
-        const inlineValues = parseInlineList(normalizedValue);
-        const values = inlineValues.length > 0 ? inlineValues : [normalizedValue];
-        for (const entry of values) {
-          if (currentSection === "ports") {
-            const parsedPort = parseShortPortMapping(entry);
-            if (parsedPort.target !== null) {
-              service.targetPorts.add(parsedPort.target);
-            }
-            if (parsedPort.published !== null) {
-              service.publishedPorts.add(parsedPort.published);
-            }
-          } else {
-            const exposePort = parsePortNumber(entry);
-            if (exposePort !== null) {
-              service.exposePorts.add(exposePort);
-            }
-          }
-        }
-      }
-      continue;
-    }
-
-    if (!currentSection || indent <= currentServiceIndent) {
-      continue;
-    }
-
-    const service = ensureService(currentService);
-
-    if (trimmed.startsWith("- ")) {
-      finalizePortMap();
-      const itemValue = trimmed.slice(2).trim();
-      if (currentSection === "ports") {
-        if (/^(target|published|protocol|host_ip|mode):/.test(itemValue) || itemValue.length === 0) {
-          currentPortMap = { target: null, published: null };
-          currentPortItemIndent = indent;
-          if (itemValue.length > 0) {
-            const [rawKey, rawValue] = itemValue.split(":", 2);
-            const mapValue = parsePortNumber(rawValue ?? "");
-            if (rawKey.trim() === "target") {
-              currentPortMap.target = mapValue;
-            }
-            if (rawKey.trim() === "published") {
-              currentPortMap.published = mapValue;
-            }
-          }
-        } else {
-          const parsedPort = parseShortPortMapping(itemValue);
-          if (parsedPort.target !== null) {
-            service.targetPorts.add(parsedPort.target);
-          }
-          if (parsedPort.published !== null) {
-            service.publishedPorts.add(parsedPort.published);
-          }
-        }
-      } else {
-        const exposePort = parsePortNumber(itemValue);
-        if (exposePort !== null) {
-          service.exposePorts.add(exposePort);
-        }
-      }
-      continue;
-    }
-
-    if (currentSection === "ports" && currentPortMap) {
-      const [rawKey, rawValue] = trimmed.split(":", 2);
-      const mapValue = parsePortNumber(rawValue ?? "");
-      if (rawKey.trim() === "target") {
-        currentPortMap.target = mapValue;
-      }
-      if (rawKey.trim() === "published") {
-        currentPortMap.published = mapValue;
-      }
-    }
-  }
-
-  finalizePortMap();
-
-  return [...services.entries()].map(([name, service]) => {
-    const portOptions = [...new Set([...service.targetPorts, ...service.exposePorts])].sort((a, b) => a - b);
-    const publishedPorts = [...service.publishedPorts].sort((a, b) => a - b);
-    const exposePorts = [...service.exposePorts].sort((a, b) => a - b);
-    const hasNameHint = /web|app|frontend|front|ui|http|nginx|caddy|server/i.test(name);
-    const detectedPublicPort = chooseDetectedPort(portOptions);
-    const likelyPublic = hasNameHint || (detectedPublicPort !== null && [80, 443, 3000, 8080, 8000, 5173].includes(detectedPublicPort));
-
-    return {
-      name,
-      portOptions,
-      publishedPorts,
-      exposePorts,
-      detectedPublicPort,
-      likelyPublic,
-      reason: buildServiceReason(name, portOptions, likelyPublic)
-    };
-  });
-}
-
-function sortComposeServices(services: ComposeServiceCandidate[]): ComposeServiceCandidate[] {
-  return services.sort((a, b) => {
-    if (a.likelyPublic !== b.likelyPublic) {
-      return a.likelyPublic ? -1 : 1;
-    }
-    return a.name.localeCompare(b.name);
-  });
 }
 
 function collectRepositoryMetadataFromPaths(repositoryFiles: string[]): RepositoryMetadata {
-  const uniqueRepositoryFiles = [...new Set(repositoryFiles)].sort((a, b) => a.localeCompare(b));
-  const yamlFiles = [...new Set(uniqueRepositoryFiles.filter((filePath) => isYamlFile(filePath)))];
-  const composeCandidates = [...new Set(yamlFiles.filter((filePath) => composeCandidateScore(filePath) > 0))].sort((a, b) => {
-    const scoreDiff = composeCandidateScore(b) - composeCandidateScore(a);
-    return scoreDiff !== 0 ? scoreDiff : a.localeCompare(b);
-  });
-
-  return {
-    repositoryFiles: uniqueRepositoryFiles,
-    yamlFiles,
-    composeCandidates,
-    recommendedComposePath: composeCandidates[0] ?? null
-  };
+  return collectComposeRepositoryMetadataFromPaths(repositoryFiles);
 }
 
 function collectRepositoryMetadata(entries: GithubTreeEntry[]): RepositoryMetadata {
@@ -776,65 +454,71 @@ function collectRepositoryMetadata(entries: GithubTreeEntry[]): RepositoryMetada
 }
 
 function listLocalRepositoryFiles(repoPath: string): string[] {
-  const results: string[] = [];
-  const ignoredDirectories = new Set([".git", "node_modules", ".next", "dist", "build", "coverage", ".turbo"]);
-  const stack: string[] = [repoPath];
-
-  while (stack.length > 0) {
-    const currentDir = stack.pop()!;
-    const entries = fs.readdirSync(currentDir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const absolutePath = path.join(currentDir, entry.name);
-      const relativePath = path.relative(repoPath, absolutePath).replace(/\\/g, "/");
-
-      if (entry.isDirectory()) {
-        if (!ignoredDirectories.has(entry.name)) {
-          stack.push(absolutePath);
-        }
-        continue;
-      }
-
-      results.push(relativePath);
-    }
-  }
-
-  return results.sort((a, b) => a.localeCompare(b));
+  return listComposeLocalRepositoryFiles(repoPath);
 }
 
 function buildFallbackServiceCandidate(serviceName: string, publicPort: number): ComposeServiceCandidate {
-  const normalizedPort = Number.isInteger(publicPort) && publicPort > 0 ? publicPort : 80;
-
-  return {
-    name: serviceName,
-    portOptions: [normalizedPort],
-    publishedPorts: [],
-    exposePorts: [normalizedPort],
-    detectedPublicPort: normalizedPort,
-    likelyPublic: true,
-    reason: "現在の保存済み設定を候補として表示しています。"
-  };
+  return buildFallbackComposeServiceCandidate(serviceName, publicPort);
 }
 
-function inspectComposeFromLocalRepository(
+function resolveSelectedComposePath(composePath: string, metadata: RepositoryMetadata): string {
+  const normalizedComposePath = composePath.trim().replace(/^\/+/, "");
+  return normalizedComposePath.length > 0
+    ? normalizedComposePath
+    : (metadata.recommendedComposePath ?? metadata.composeCandidates[0] ?? "");
+}
+
+async function inspectComposeFromLocalRepository(
   repoPath: string,
   composePath: string,
   fallbackServiceName: string,
-  fallbackPort: number
-): ComposeInspectionResult {
+  fallbackPort: number,
+  options: {
+    repositoryUrl?: string;
+    branch?: string;
+  } = {}
+): Promise<ComposeInspectionResult> {
+  const fallbackServices = [buildFallbackServiceCandidate(fallbackServiceName, fallbackPort)];
+
   if (!fs.existsSync(repoPath)) {
-    return {
+    if (options.repositoryUrl && options.branch) {
+      try {
+        return await inspectComposeFromRepository(options.repositoryUrl, options.branch, composePath);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "compose の取得に失敗しました。";
+        return buildUnavailableComposeInspection({
+          composeCandidates: composePath.length > 0 ? [composePath] : [],
+          yamlFiles: composePath.length > 0 ? [composePath] : [],
+          recommendedComposePath: composePath.length > 0 ? composePath : null,
+          selectedComposePath: composePath.trim().replace(/^\/+/, ""),
+          source: {
+            kind: "github",
+            path: composePath.trim().replace(/^\/+/, ""),
+            repositoryUrl: options.repositoryUrl,
+            branch: options.branch
+          },
+          message,
+          fallbackServices
+        });
+      }
+    }
+
+    return buildUnavailableComposeInspection({
       composeCandidates: composePath.length > 0 ? [composePath] : [],
       yamlFiles: composePath.length > 0 ? [composePath] : [],
       recommendedComposePath: composePath.length > 0 ? composePath : null,
-      selectedComposePath: composePath,
-      services: [buildFallbackServiceCandidate(fallbackServiceName, fallbackPort)],
-      warning: "ローカルリポジトリがまだ取得されていないため、現在設定のみ表示しています。"
-    };
+      selectedComposePath: composePath.trim().replace(/^\/+/, ""),
+      source: {
+        kind: "local",
+        path: composePath.trim().replace(/^\/+/, "")
+      },
+      message: "ローカルリポジトリがまだ取得されていません。",
+      fallbackServices
+    });
   }
 
   const metadata = collectRepositoryMetadataFromPaths(listLocalRepositoryFiles(repoPath));
-  const normalizedComposePath = composePath.trim().replace(/^\/+/, "");
+  const normalizedComposePath = resolveSelectedComposePath(composePath, metadata);
   const candidateSet = new Set(metadata.composeCandidates);
   const yamlSet = new Set(metadata.yamlFiles);
 
@@ -852,41 +536,94 @@ function inspectComposeFromLocalRepository(
     return scoreDiff !== 0 ? scoreDiff : a.localeCompare(b);
   });
   const yamlFiles = [...yamlSet].sort((a, b) => a.localeCompare(b));
-  const selectedComposePath = normalizedComposePath.length > 0
-    ? normalizedComposePath
-    : (composeCandidates[0] ?? metadata.recommendedComposePath ?? "");
+  const selectedComposePath = normalizedComposePath;
 
   if (selectedComposePath.length === 0) {
-    return {
+    return buildUnavailableComposeInspection({
       composeCandidates,
       yamlFiles,
       recommendedComposePath: metadata.recommendedComposePath,
       selectedComposePath: "",
-      services: [buildFallbackServiceCandidate(fallbackServiceName, fallbackPort)],
-      warning: "compose 候補を検出できなかったため、現在設定のみ表示しています。"
-    };
+      source: {
+        kind: "local",
+        path: ""
+      },
+      message: "compose 候補を検出できませんでした。",
+      fallbackServices
+    });
   }
 
   const composeFilePath = path.resolve(repoPath, selectedComposePath);
   if (!fs.existsSync(composeFilePath)) {
-    return {
+    if (options.repositoryUrl && options.branch) {
+      try {
+        return await inspectComposeFromRepository(options.repositoryUrl, options.branch, selectedComposePath);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : `compose ファイルが見つかりません: ${selectedComposePath}`;
+        return buildUnavailableComposeInspection({
+          composeCandidates,
+          yamlFiles,
+          recommendedComposePath: metadata.recommendedComposePath,
+          selectedComposePath,
+          source: {
+            kind: "github",
+            path: selectedComposePath,
+            repositoryUrl: options.repositoryUrl,
+            branch: options.branch
+          },
+          message,
+          fallbackServices
+        });
+      }
+    }
+
+    return buildUnavailableComposeInspection({
       composeCandidates,
       yamlFiles,
       recommendedComposePath: metadata.recommendedComposePath,
       selectedComposePath,
-      services: [buildFallbackServiceCandidate(fallbackServiceName, fallbackPort)],
-      warning: `compose ファイルが見つかりません: ${selectedComposePath}`
-    };
+      source: {
+        kind: "local",
+        path: selectedComposePath,
+        absolutePath: composeFilePath
+      },
+      message: `compose ファイルが見つかりません: ${selectedComposePath}`,
+      fallbackServices
+    });
   }
 
-  const content = fs.readFileSync(composeFilePath, "utf8");
-  return {
+  return inspectComposeFile({
+    absolutePath: composeFilePath,
     composeCandidates,
     yamlFiles,
     recommendedComposePath: metadata.recommendedComposePath,
     selectedComposePath,
-    services: sortComposeServices(parseComposeServices(content))
-  };
+    source: {
+      repositoryUrl: options.repositoryUrl,
+      branch: options.branch
+    }
+  });
+}
+
+async function inspectComposeForApplicationRepository(
+  repoPath: string,
+  composePath: string,
+  fallbackServiceName: string,
+  fallbackPort: number,
+  options: {
+    repositoryUrl?: string;
+    branch?: string;
+  } = {}
+): Promise<ComposeInspectionResult> {
+  if (options.repositoryUrl && options.branch) {
+    try {
+      return await inspectComposeFromRepository(options.repositoryUrl, options.branch, composePath);
+    } catch {
+      // Fall back to the local checkout when the remote repository is unavailable.
+    }
+  }
+
+  return inspectComposeFromLocalRepository(repoPath, composePath, fallbackServiceName, fallbackPort, options);
 }
 
 function validateSelectedComposeService(
@@ -894,36 +631,69 @@ function validateSelectedComposeService(
   serviceName: string,
   composePath: string
 ): void {
-  const normalizedComposePath = composePath.trim().replace(/^\/+/, "");
-
-  if (composeInspection.selectedComposePath !== normalizedComposePath) {
-    throw new Error(`compose 候補に存在しません: ${composePath}`);
-  }
-
-  if (!composeInspection.services.some((service) => service.name === serviceName)) {
-    throw new Error(`compose 内に存在しないサービスです: ${serviceName}`);
-  }
+  validateComposeServiceSelection(composeInspection, serviceName, composePath);
 }
 
 async function inspectComposeFromRepository(
   repositoryUrl: string,
   branch: string,
   composePath: string
-): Promise<{ composePath: string; services: ComposeServiceCandidate[] }> {
-  const entries = await fetchRepositoryTree(repositoryUrl, branch);
-  const normalizedPath = composePath.trim().replace(/^\/+/, "");
-  const matchedEntry = entries.find((entry) => entry.path === normalizedPath);
+): Promise<ComposeInspectionResult> {
+  try {
+    const entries = await fetchRepositoryTree(repositoryUrl, branch);
+    const metadata = collectRepositoryMetadata(entries);
+    const normalizedPath = resolveSelectedComposePath(composePath, metadata);
+    const matchedEntry = entries.find((entry) => entry.path === normalizedPath);
 
-  if (!matchedEntry) {
-    throw new Error(`compose ファイルが見つかりません: ${normalizedPath}`);
+    if (!matchedEntry) {
+      throw new Error(`compose ファイルが見つかりません: ${normalizedPath}`);
+    }
+
+    const content = await fetchBlobContent(matchedEntry.url);
+    return inspectComposeYaml({
+      rawYaml: content,
+      composeCandidates: metadata.composeCandidates,
+      yamlFiles: metadata.yamlFiles,
+      recommendedComposePath: metadata.recommendedComposePath,
+      selectedComposePath: normalizedPath,
+      source: {
+        kind: "github",
+        path: normalizedPath,
+        repositoryUrl,
+        branch,
+        blobUrl: matchedEntry.url
+      }
+    });
+  } catch {
+    return withTemporaryGitClone(repositoryUrl, branch, async (repoPath) => {
+      const metadata = collectRepositoryMetadataFromPaths(listLocalRepositoryFiles(repoPath));
+      const normalizedPath = resolveSelectedComposePath(composePath, metadata);
+
+      if (normalizedPath.length === 0) {
+        throw new Error("compose 候補を検出できませんでした。");
+      }
+
+      const absolutePath = path.resolve(repoPath, normalizedPath);
+      if (!fs.existsSync(absolutePath)) {
+        throw new Error(`compose ファイルが見つかりません: ${normalizedPath}`);
+      }
+
+      const rawYaml = fs.readFileSync(absolutePath, "utf8");
+      return inspectComposeYaml({
+        rawYaml,
+        composeCandidates: metadata.composeCandidates,
+        yamlFiles: metadata.yamlFiles,
+        recommendedComposePath: metadata.recommendedComposePath,
+        selectedComposePath: normalizedPath,
+        source: {
+          kind: "github",
+          path: normalizedPath,
+          repositoryUrl,
+          branch
+        }
+      });
+    });
   }
-
-  const content = await fetchBlobContent(matchedEntry.url);
-
-  return {
-    composePath: normalizedPath,
-    services: sortComposeServices(parseComposeServices(content))
-  };
 }
 
 export const applicationsRouter = new Hono();
@@ -1082,8 +852,7 @@ applicationsRouter.post("/import/resolve", async (c) => {
   let recommendedComposePath: string | null = null;
 
   try {
-    const entries = await fetchRepositoryTree(parsedSource.canonicalRepositoryUrl, resolvedBranch);
-    const metadata = collectRepositoryMetadata(entries);
+    const metadata = await collectRepositoryMetadataFromRemote(parsedSource.canonicalRepositoryUrl, resolvedBranch);
     repositoryFiles = metadata.repositoryFiles;
     yamlFiles = metadata.yamlFiles;
     composeCandidates = metadata.composeCandidates;
@@ -1117,9 +886,14 @@ applicationsRouter.post("/import/compose-inspect", async (c) => {
     return c.json({ message: "入力値が不正です。", issues: parsedPayload.error.issues }, 400);
   }
 
-  let normalizedImportInput: { repositoryUrl: string; defaultBranch: string };
+  let normalizedRepositoryUrl: string;
+  let normalizedBranch: string;
   try {
-    normalizedImportInput = normalizeCreateImportInput(parsedPayload.data.repositoryUrl, parsedPayload.data.branch);
+    normalizedRepositoryUrl = normalizeGithubRepositoryUrl(parsedPayload.data.repositoryUrl);
+    normalizedBranch = normalizeBranchInput(parsedPayload.data.branch);
+    if (normalizedBranch.length === 0) {
+      throw new Error("ブランチ名を解釈できません。");
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "GitHub URL の解釈に失敗しました。";
     return c.json({ message }, 400);
@@ -1127,8 +901,8 @@ applicationsRouter.post("/import/compose-inspect", async (c) => {
 
   try {
     const inspection = await inspectComposeFromRepository(
-      normalizedImportInput.repositoryUrl,
-      normalizedImportInput.defaultBranch,
+      normalizedRepositoryUrl,
+      normalizedBranch,
       parsedPayload.data.composePath
     );
     return c.json(inspection);
@@ -1138,7 +912,7 @@ applicationsRouter.post("/import/compose-inspect", async (c) => {
   }
 });
 
-applicationsRouter.get("/:applicationId", (c) => {
+applicationsRouter.get("/:applicationId", async (c) => {
   const applicationId = c.req.param("applicationId");
 
   const application = db
@@ -1177,6 +951,7 @@ applicationsRouter.get("/:applicationId", (c) => {
           mode,
           keep_volumes_on_rebuild,
           device_requirements,
+          env_overrides,
           enabled
         FROM deployments
         WHERE application_id = ?
@@ -1192,6 +967,7 @@ applicationsRouter.get("/:applicationId", (c) => {
         mode: string;
         keep_volumes_on_rebuild: number;
         device_requirements: string;
+        env_overrides: string;
         enabled: number;
       }
     | undefined;
@@ -1245,16 +1021,21 @@ applicationsRouter.get("/:applicationId", (c) => {
         ...deployment,
         keep_volumes_on_rebuild: Boolean(deployment.keep_volumes_on_rebuild),
         enabled: Boolean(deployment.enabled),
-        device_requirements: parseJsonSafely(String(deployment.device_requirements ?? "[]"))
+        device_requirements: parseJsonSafely(String(deployment.device_requirements ?? "[]")),
+        env_overrides: parseJsonObjectSafely(String(deployment.env_overrides ?? "{}"))
       }
     : null;
 
   const composeInspection = normalizedDeployment
-    ? inspectComposeFromLocalRepository(
+    ? await inspectComposeForApplicationRepository(
         path.join(env.appsRoot, String(application.name)),
         String(normalizedDeployment.compose_path),
         String(normalizedDeployment.public_service_name),
-        Number(normalizedDeployment.public_port)
+        Number(normalizedDeployment.public_port),
+        {
+          repositoryUrl: String(application.repository_url),
+          branch: String(application.default_branch)
+        }
       )
     : null;
 
@@ -1289,7 +1070,7 @@ applicationsRouter.post("/:applicationId/deployment/inspect", async (c) => {
   const application = db
     .prepare(
       `
-        SELECT a.name, d.public_service_name, d.public_port
+        SELECT a.name, a.repository_url, a.default_branch, d.public_service_name, d.public_port
         FROM applications a
         INNER JOIN deployments d ON d.application_id = a.application_id
         WHERE a.application_id = ?
@@ -1298,6 +1079,8 @@ applicationsRouter.post("/:applicationId/deployment/inspect", async (c) => {
     .get(applicationId) as
     | {
         name: string;
+        repository_url: string;
+        default_branch: string;
         public_service_name: string;
         public_port: number;
       }
@@ -1307,11 +1090,15 @@ applicationsRouter.post("/:applicationId/deployment/inspect", async (c) => {
     return c.json({ message: "対象アプリが見つかりません。" }, 404);
   }
 
-  const inspection = inspectComposeFromLocalRepository(
+  const inspection = await inspectComposeForApplicationRepository(
     path.join(env.appsRoot, application.name),
     parsed.data.composePath,
     application.public_service_name,
-    application.public_port
+    application.public_port,
+    {
+      repositoryUrl: application.repository_url,
+      branch: application.default_branch
+    }
   );
 
   return c.json(inspection);
@@ -1332,12 +1119,19 @@ applicationsRouter.patch("/:applicationId/deployment", async (c) => {
   const application = db
     .prepare(
       `
-        SELECT application_id, name
+        SELECT application_id, name, repository_url, default_branch
         FROM applications
         WHERE application_id = ?
       `
     )
-    .get(applicationId) as { application_id: string; name: string } | undefined;
+    .get(applicationId) as
+    | {
+        application_id: string;
+        name: string;
+        repository_url: string;
+        default_branch: string;
+      }
+    | undefined;
 
   if (!application) {
     return c.json({ message: "対象アプリが見つかりません。" }, 404);
@@ -1346,7 +1140,7 @@ applicationsRouter.patch("/:applicationId/deployment", async (c) => {
   const currentDeployment = db
     .prepare(
       `
-        SELECT compose_path, public_service_name, public_port, hostname, keep_volumes_on_rebuild
+        SELECT compose_path, public_service_name, public_port, hostname, keep_volumes_on_rebuild, env_overrides
         FROM deployments
         WHERE application_id = ?
       `
@@ -1358,6 +1152,7 @@ applicationsRouter.patch("/:applicationId/deployment", async (c) => {
         public_port: number;
         hostname: string;
         keep_volumes_on_rebuild: number;
+        env_overrides: string;
       }
     | undefined;
 
@@ -1369,15 +1164,20 @@ applicationsRouter.patch("/:applicationId/deployment", async (c) => {
   const keepVolumesOnRebuild = data.keepVolumesOnRebuild ?? Boolean(currentDeployment.keep_volumes_on_rebuild);
   const updatedAt = nowIso();
   const repoPath = path.join(env.appsRoot, application.name);
-  const composeInspection = inspectComposeFromLocalRepository(
+  const composeInspection = await inspectComposeForApplicationRepository(
     repoPath,
     data.composePath,
     currentDeployment.public_service_name,
-    currentDeployment.public_port
+    currentDeployment.public_port,
+    {
+      repositoryUrl: application.repository_url,
+      branch: application.default_branch
+    }
   );
 
   try {
     validateSelectedComposeService(composeInspection, data.publicServiceName, data.composePath);
+    validateEnvironmentOverrides(composeInspection, data.envOverrides);
   } catch (error) {
     const message = error instanceof Error ? error.message : "compose 候補の検証に失敗しました。";
     return c.json({ message }, 400);
@@ -1392,7 +1192,8 @@ applicationsRouter.patch("/:applicationId/deployment", async (c) => {
               public_service_name = ?,
               public_port = ?,
               hostname = ?,
-              keep_volumes_on_rebuild = ?
+              keep_volumes_on_rebuild = ?,
+              env_overrides = ?
           WHERE application_id = ?
         `
       ).run(
@@ -1401,6 +1202,7 @@ applicationsRouter.patch("/:applicationId/deployment", async (c) => {
         data.publicPort,
         data.hostname,
         keepVolumesOnRebuild ? 1 : 0,
+        JSON.stringify(data.envOverrides),
         applicationId
       );
 
@@ -1448,6 +1250,9 @@ applicationsRouter.patch("/:applicationId/deployment", async (c) => {
   }
   if (Boolean(currentDeployment.keep_volumes_on_rebuild) !== keepVolumesOnRebuild) {
     requestedChanges.push(`keepVolumesOnRebuild=${keepVolumesOnRebuild}`);
+  }
+  if (String(currentDeployment.env_overrides ?? "{}") !== JSON.stringify(data.envOverrides)) {
+    requestedChanges.push(`envOverrides=${Object.keys(data.envOverrides).length}件`);
   }
 
   recordEvent({
@@ -1500,9 +1305,8 @@ applicationsRouter.post("/", async (c) => {
       normalizedImportInput.defaultBranch,
       data.composePath
     );
-    if (!inspection.services.some((service) => service.name === data.publicServiceName)) {
-      return c.json({ message: `選択された compose にサービス ${data.publicServiceName} が見つかりません。` }, 400);
-    }
+    validateSelectedComposeService(inspection, data.publicServiceName, data.composePath);
+    validateEnvironmentOverrides(inspection, data.envOverrides);
   } catch (error) {
     const message = error instanceof Error ? error.message : "compose 解析に失敗しました。";
     return c.json({ message }, 400);
@@ -1537,6 +1341,7 @@ applicationsRouter.post("/", async (c) => {
       data.mode,
       data.keepVolumesOnRebuild ? 1 : 0,
       JSON.stringify(data.deviceRequirements),
+      JSON.stringify(data.envOverrides),
       1
     );
 
@@ -1556,6 +1361,17 @@ applicationsRouter.post("/", async (c) => {
 
   try {
     const jobId = tx();
+    try {
+      syncInfrastructure(`register:${data.name}`);
+    } catch (syncError) {
+      recordEvent({
+        scope: "infrastructure",
+        applicationId,
+        level: "warning",
+        title: "初回 DNS/Proxy 同期に失敗しました",
+        message: syncError instanceof Error ? syncError.message : "不明なエラー"
+      });
+    }
     void executeDeployJob(applicationId, jobId);
     return c.json({ applicationId, deploymentId, routeId, jobId, message: "デプロイジョブを開始しました。" }, 201);
   } catch (error) {
@@ -1585,6 +1401,74 @@ applicationsRouter.post("/:applicationId/restart", async (c) => {
     {
       jobId,
       message: `${application.name} の再起動ジョブを開始しました。`
+    },
+    202
+  );
+});
+
+applicationsRouter.post("/:applicationId/stop", async (c) => {
+  const applicationId = c.req.param("applicationId");
+
+  const application = db
+    .prepare(
+      `
+        SELECT a.name, d.enabled
+        FROM applications a
+        INNER JOIN deployments d ON d.application_id = a.application_id
+        WHERE a.application_id = ?
+      `
+    )
+    .get(applicationId) as { name: string; enabled: number } | undefined;
+
+  if (!application) {
+    return c.json({ message: "対象アプリが見つかりません。" }, 404);
+  }
+
+  if (!application.enabled) {
+    return c.json({ message: "このアプリは既に停止しています。" }, 400);
+  }
+
+  const jobId = createJob("stop", applicationId, "停止ジョブを作成しました。");
+  void executeStopJob(applicationId, jobId);
+
+  return c.json(
+    {
+      jobId,
+      message: `${application.name} の停止ジョブを開始しました。`
+    },
+    202
+  );
+});
+
+applicationsRouter.post("/:applicationId/resume", async (c) => {
+  const applicationId = c.req.param("applicationId");
+
+  const application = db
+    .prepare(
+      `
+        SELECT a.name, d.enabled
+        FROM applications a
+        INNER JOIN deployments d ON d.application_id = a.application_id
+        WHERE a.application_id = ?
+      `
+    )
+    .get(applicationId) as { name: string; enabled: number } | undefined;
+
+  if (!application) {
+    return c.json({ message: "対象アプリが見つかりません。" }, 404);
+  }
+
+  if (application.enabled) {
+    return c.json({ message: "このアプリは既に公開中です。" }, 400);
+  }
+
+  const jobId = createJob("resume", applicationId, "再開ジョブを作成しました。");
+  void executeResumeJob(applicationId, jobId);
+
+  return c.json(
+    {
+      jobId,
+      message: `${application.name} の再開ジョブを開始しました。`
     },
     202
   );

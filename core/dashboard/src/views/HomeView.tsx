@@ -6,12 +6,11 @@ type HomeViewProps = {
   applications: ApplicationListItem[];
   events: SystemEvent[];
   onOpenApplications: () => void;
-  onOpenImport: () => void;
   onOpenDetail: (applicationId: string) => void;
 };
 
 export function HomeView(props: HomeViewProps) {
-  const { system, applications, events, onOpenApplications, onOpenImport, onOpenDetail } = props;
+  const { system, applications, events, onOpenApplications, onOpenDetail } = props;
 
   const priorityApps = applications
     .filter((application) => application.status === "Failed" || application.status === "Degraded")
@@ -20,6 +19,7 @@ export function HomeView(props: HomeViewProps) {
   const recentEvents = [...events].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 30);
   const dnsStatus = system?.dnsServer;
   const dnsListening = Boolean(dnsStatus?.udpListening || dnsStatus?.tcpListening);
+  const relayHealthy = dnsStatus?.relay ? (dnsStatus.relay.udpReachable || dnsStatus.relay.tcpReachable) : true;
 
   return (
     <div className="view-grid home-view">
@@ -44,20 +44,6 @@ export function HomeView(props: HomeViewProps) {
 
       <section className="quick-grid">
         <article className="quick-card">
-          <h2>アプリ運用</h2>
-          <p>登録済みアプリの状態確認と詳細画面への遷移。</p>
-          <button type="button" className="button primary" onClick={onOpenApplications}>
-            アプリ一覧へ
-          </button>
-        </article>
-        <article className="quick-card">
-          <h2>新規インポート</h2>
-          <p>GitHub URL からアプリ登録。tree URL の branch 解決に対応。</p>
-          <button type="button" className="button primary" onClick={onOpenImport}>
-            アプリ登録へ
-          </button>
-        </article>
-        <article className="quick-card">
           <h2>DNS サーバー</h2>
           <p>
             {dnsStatus?.enabled
@@ -68,6 +54,12 @@ export function HomeView(props: HomeViewProps) {
                 : `起動失敗: ${dnsStatus.lastError ?? "状態不明"}`
               : "無効化されています。"}
           </p>
+          {dnsStatus?.relay?.required ? (
+            <p className={relayHealthy ? "hint" : "hint warning"}>
+              53番前段: {relayHealthy ? "到達可" : `未応答 (${dnsStatus.relay.lastError ?? "状態不明"})`} /{" "}
+              {dnsStatus.relay.targetHost}:{dnsStatus.relay.targetPort}
+            </p>
+          ) : null}
           {dnsStatus?.enabled ? <p>DNS生成ファイル: {dnsStatus.hostsFilePath}</p> : null}
         </article>
       </section>

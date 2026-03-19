@@ -3,18 +3,56 @@
 import { execFileSync } from "node:child_process";
 
 const proxyContainer = "labcore-dev-proxy-proxy-1";
-const appNetworkPattern = /^labcore-[^/\s]+_default$/;
+const ignoredNetworks = new Set([
+  "bridge",
+  "host",
+  "none",
+  "labcore-dev-proxy_default",
+  "compose_default"
+]);
 
 function runDocker(args) {
   return execFileSync("docker", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
-function listNetworks() {
-  const output = runDocker(["network", "ls", "--format", "{{.Name}}"]);
+function listApplicationContainers() {
+  const output = runDocker([
+    "ps",
+    "--format",
+    "{{.Names}}",
+    "--filter",
+    "name=-web-",
+    "--filter",
+    "name=-api-",
+    "--filter",
+    "name=-nfc-",
+    "--filter",
+    "name=-mysql-",
+    "--filter",
+    "name=-db-"
+  ]);
+
   return output
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line.length > 0 && appNetworkPattern.test(line));
+    .filter((line) => line.length > 0 && line !== proxyContainer);
+}
+
+function listNetworks() {
+  const networks = new Set();
+
+  for (const containerName of listApplicationContainers()) {
+    const output = runDocker(["inspect", containerName, "--format", "{{json .NetworkSettings.Networks}}"]);
+    const parsed = JSON.parse(output);
+
+    for (const networkName of Object.keys(parsed)) {
+      if (!ignoredNetworks.has(networkName)) {
+        networks.add(networkName);
+      }
+    }
+  }
+
+  return [...networks].sort((a, b) => a.localeCompare(b));
 }
 
 function ensureProxyContainerExists() {

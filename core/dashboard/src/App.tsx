@@ -14,8 +14,10 @@ import {
   inspectComposeFile,
   rebuildApplication,
   resolveImportSource,
+  resumeApplication,
   restartApplication,
   rollbackApplication,
+  stopApplication,
   syncInfrastructure,
   updateApplicationDeployment
 } from "./api";
@@ -24,6 +26,7 @@ import type {
   ApplicationComposeInspection,
   ApplicationDetail,
   ApplicationListItem,
+  ComposeEnvironmentRequirement,
   ComposeServiceCandidate,
   CreateApplicationPayload,
   DeleteMode,
@@ -69,6 +72,7 @@ const initialResolveState: ImportResolveState = {
 
 const initialComposeState: ImportComposeState = {
   status: "idle",
+  inspection: null,
   services: [],
   warning: ""
 };
@@ -90,6 +94,7 @@ type DeploymentFormState = {
   publicPort: string;
   hostname: string;
   keepVolumesOnRebuild: boolean;
+  envOverrides: Record<string, string>;
 };
 
 const initialDeploymentForm: DeploymentFormState = {
@@ -97,7 +102,8 @@ const initialDeploymentForm: DeploymentFormState = {
   publicServiceName: "web",
   publicPort: "3000",
   hostname: "",
-  keepVolumesOnRebuild: true
+  keepVolumesOnRebuild: true,
+  envOverrides: {}
 };
 
 type DeploymentComposeState = {
@@ -106,6 +112,7 @@ type DeploymentComposeState = {
   yamlFiles: string[];
   services: ComposeServiceCandidate[];
   selectedComposePath: string;
+  inspection: ApplicationComposeInspection | null;
   warning: string;
 };
 
@@ -115,10 +122,40 @@ const initialDeploymentComposeState: DeploymentComposeState = {
   yamlFiles: [],
   services: [],
   selectedComposePath: "",
+  inspection: null,
   warning: ""
 };
 
-function buildCreatePayload(form: ImportFormState, deviceRequirementsRaw: string): CreateApplicationPayload {
+function normalizeEnvironmentOverrides(envOverrides: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(envOverrides)
+      .map(([key, value]) => [key.trim(), value] as const)
+      .filter(([key, value]) => key.length > 0 && value.trim().length > 0)
+  );
+}
+
+function mergeEnvironmentOverrides(
+  current: Record<string, string>,
+  requirements: ComposeEnvironmentRequirement[]
+): Record<string, string> {
+  if (requirements.length === 0) {
+    return { ...current };
+  }
+
+  const next = { ...current };
+  for (const requirement of requirements) {
+    if (!(requirement.name in next)) {
+      next[requirement.name] = "";
+    }
+  }
+  return next;
+}
+
+function buildCreatePayload(
+  form: ImportFormState,
+  deviceRequirementsRaw: string,
+  environmentOverrides: Record<string, string>
+): CreateApplicationPayload {
   return {
     name: form.name,
     description: form.description,
@@ -133,7 +170,8 @@ function buildCreatePayload(form: ImportFormState, deviceRequirementsRaw: string
     deviceRequirements: deviceRequirementsRaw
       .split(",")
       .map((value) => value.trim())
-      .filter((value) => value.length > 0)
+      .filter((value) => value.length > 0),
+    envOverrides: normalizeEnvironmentOverrides(environmentOverrides)
   };
 }
 
@@ -148,7 +186,8 @@ function buildDeploymentForm(detail: ApplicationDetail | null): DeploymentFormSt
     publicServiceName: deployment.public_service_name,
     publicPort: String(deployment.public_port),
     hostname: deployment.hostname,
-    keepVolumesOnRebuild: deployment.keep_volumes_on_rebuild
+    keepVolumesOnRebuild: deployment.keep_volumes_on_rebuild,
+    envOverrides: deployment.env_overrides
   };
 }
 
@@ -158,7 +197,8 @@ function buildDeploymentPayload(form: DeploymentFormState): UpdateDeploymentPayl
     publicServiceName: form.publicServiceName.trim(),
     publicPort: Number(form.publicPort),
     hostname: form.hostname.trim(),
-    keepVolumesOnRebuild: form.keepVolumesOnRebuild
+    keepVolumesOnRebuild: form.keepVolumesOnRebuild,
+    envOverrides: normalizeEnvironmentOverrides(form.envOverrides)
   };
 }
 
@@ -173,7 +213,8 @@ function buildDeploymentComposeState(inspection: ApplicationComposeInspection | 
     yamlFiles: inspection.yamlFiles,
     services: inspection.services,
     selectedComposePath: inspection.selectedComposePath,
-    warning: inspection.warning ?? ""
+    inspection,
+    warning: buildComposeInspectionWarning(inspection)
   };
 }
 
@@ -184,6 +225,25 @@ function chooseRecommendedService(services: ComposeServiceCandidate[]): ComposeS
     services[0] ??
     null
   );
+}
+
+function buildComposeInspectionWarning(inspection: {
+  parseError: string | null;
+  parseWarnings: string[];
+  analysisWarnings: string[];
+} | null): string {
+  if (!inspection) {
+    return "";
+  }
+
+  const messages: string[] = [];
+  if (inspection.parseError) {
+    messages.push(`YAML 解析エラー: ${(inspection.parseError.split("\n")[0] ?? inspection.parseError).trim()}`);
+  }
+  messages.push(...inspection.parseWarnings.slice(0, 2));
+  messages.push(...inspection.analysisWarnings.slice(0, 2));
+
+  return [...new Set(messages)].slice(0, 3).join(" / ");
 }
 
 export function App() {
@@ -200,6 +260,7 @@ export function App() {
   const [resolveState, setResolveState] = useState<ImportResolveState>(initialResolveState);
   const [composeState, setComposeState] = useState<ImportComposeState>(initialComposeState);
   const [deviceRequirementsRaw, setDeviceRequirementsRaw] = useState("");
+  const [environmentOverrides, setEnvironmentOverrides] = useState<Record<string, string>>({});
   const [deploymentForm, setDeploymentForm] = useState<DeploymentFormState>(initialDeploymentForm);
   const [deploymentComposeState, setDeploymentComposeState] = useState<DeploymentComposeState>(initialDeploymentComposeState);
   const [deploymentDirty, setDeploymentDirty] = useState(false);
@@ -420,6 +481,12 @@ export function App() {
       await task();
       setActionMessage(successMessage);
       await reload({ mode: "action" });
+      if (activeView === "detail" && selectedApplicationId) {
+        await reloadDetail(selectedApplicationId, {
+          mode: "manual",
+          syncDeploymentForm: !deploymentDirty
+        });
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "処理に失敗しました。");
     } finally {
@@ -446,6 +513,7 @@ export function App() {
     if (key === "sourceUrl") {
       setResolveState(initialResolveState);
       setComposeState(initialComposeState);
+      setEnvironmentOverrides({});
       return;
     }
 
@@ -489,16 +557,19 @@ export function App() {
       return;
     }
 
-    setComposeState({ status: "inspecting", services: [], warning: "" });
+    setComposeState({ status: "inspecting", inspection: null, services: [], warning: "" });
 
     try {
       const inspection = await inspectComposeFile(repositoryUrl, branch, normalizedPath);
       setComposeState({
         status: "ready",
+        inspection,
         services: inspection.services,
-        warning: inspection.warning ?? ""
+        warning: buildComposeInspectionWarning(inspection)
       });
-      setForm((prev) => ({ ...prev, composePath: inspection.composePath }));
+      setForm((prev) => ({ ...prev, composePath: inspection.selectedComposePath }));
+      setDeviceRequirementsRaw(inspection.detectedDeviceRequirements.join(", "));
+      setEnvironmentOverrides((prev) => mergeEnvironmentOverrides(prev, inspection.environmentRequirements));
 
       if (options.autoSelect !== false) {
         const recommended = chooseRecommendedService(inspection.services);
@@ -514,6 +585,7 @@ export function App() {
       const message = error instanceof Error ? error.message : "compose 解析に失敗しました。";
       setComposeState({
         status: "error",
+        inspection: null,
         services: [],
         warning: message
       });
@@ -559,7 +631,7 @@ export function App() {
 
   async function onImportSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    const payload = buildCreatePayload(form, deviceRequirementsRaw);
+    const payload = buildCreatePayload(form, deviceRequirementsRaw, environmentOverrides);
 
     if (payload.repositoryUrl.length === 0) {
       setErrorMessage("GitHub URL を入力してください。");
@@ -575,6 +647,7 @@ export function App() {
       setActionMessage("アプリを登録しました。");
       setForm(initialImportForm);
       setDeviceRequirementsRaw("");
+      setEnvironmentOverrides({});
       setResolveState(initialResolveState);
       setComposeState(initialComposeState);
       await reload({ mode: "action" });
@@ -658,6 +731,24 @@ export function App() {
     setDeploymentDirty(true);
   }
 
+  function onImportEnvironmentOverrideChange(name: string, value: string): void {
+    setEnvironmentOverrides((prev) => ({
+      ...prev,
+      [name]: value
+    }));
+  }
+
+  function onDeploymentEnvironmentOverrideChange(name: string, value: string): void {
+    setDeploymentForm((prev) => ({
+      ...prev,
+      envOverrides: {
+        ...prev.envOverrides,
+        [name]: value
+      }
+    }));
+    setDeploymentDirty(true);
+  }
+
   async function onSelectDeploymentCompose(composePath: string): Promise<void> {
     if (!selectedApplicationId) {
       return;
@@ -668,6 +759,7 @@ export function App() {
       ...prev,
       status: "loading",
       selectedComposePath: composePath,
+      inspection: null,
       warning: ""
     }));
     setDeploymentForm((prev) => ({ ...prev, composePath }));
@@ -682,7 +774,8 @@ export function App() {
         yamlFiles: inspection.yamlFiles,
         services: inspection.services,
         selectedComposePath: inspection.selectedComposePath,
-        warning: inspection.warning ?? ""
+        inspection,
+        warning: buildComposeInspectionWarning(inspection)
       });
       setDeploymentForm((prev) => {
         const activeService = inspection.services.find((service) => service.name === prev.publicServiceName) ?? recommendedService;
@@ -690,13 +783,15 @@ export function App() {
           ...prev,
           composePath: inspection.selectedComposePath,
           publicServiceName: activeService?.name ?? prev.publicServiceName,
-          publicPort: String(activeService?.detectedPublicPort ?? prev.publicPort)
+          publicPort: String(activeService?.detectedPublicPort ?? prev.publicPort),
+          envOverrides: mergeEnvironmentOverrides(prev.envOverrides, inspection.environmentRequirements)
         };
       });
     } catch (error) {
       setDeploymentComposeState((prev) => ({
         ...prev,
         status: "error",
+        inspection: null,
         warning: error instanceof Error ? error.message : "compose 候補の取得に失敗しました。"
       }));
       setErrorMessage(error instanceof Error ? error.message : "compose 候補の取得に失敗しました。");
@@ -724,6 +819,10 @@ export function App() {
     }
 
     const payload = buildDeploymentPayload(deploymentForm);
+    if (deploymentComposeState.inspection?.parseError) {
+      setErrorMessage("選択した compose の YAML 解析に失敗しています。内容を確認してから保存してください。");
+      return;
+    }
     if (payload.publicServiceName.length === 0) {
       setErrorMessage("公開サービス名を入力してください。");
       return;
@@ -812,7 +911,6 @@ export function App() {
           applications={applications}
           events={events}
           onOpenApplications={() => setActiveView("apps")}
-          onOpenImport={() => setActiveView("import")}
           onOpenDetail={(applicationId) => openDetail(applicationId)}
         />
       ) : null}
@@ -825,12 +923,14 @@ export function App() {
         <ImportView
           form={form}
           deviceRequirementsRaw={deviceRequirementsRaw}
+          environmentOverrides={environmentOverrides}
           resolveState={resolveState}
           composeState={composeState}
           rootDomain={system?.execution?.rootDomain ?? "lab.localhost"}
           loading={busy}
           onFieldChange={onFormFieldChange}
           onDeviceRequirementsChange={setDeviceRequirementsRaw}
+          onEnvironmentOverrideChange={onImportEnvironmentOverrideChange}
           onResolveSource={resolveSource}
           onInspectCompose={(composePath) => inspectCompose(composePath, { autoSelect: true })}
           onSelectService={(service) =>
@@ -858,10 +958,17 @@ export function App() {
           deleteConfirmText={deleteConfirmText}
           onBackToApplications={() => setActiveView("apps")}
           onDeploymentFieldChange={onDeploymentFieldChange}
+          onDeploymentEnvironmentOverrideChange={onDeploymentEnvironmentOverrideChange}
           onSelectDeploymentCompose={(composePath) => void onSelectDeploymentCompose(composePath)}
           onSelectDeploymentService={onSelectDeploymentService}
           onResetDeployment={resetDeploymentForm}
           onSaveDeployment={() => void saveDeploymentSettings()}
+          onStop={(applicationId, applicationName) =>
+            void runAction(async () => stopApplication(applicationId), `${applicationName} を停止しました。`)
+          }
+          onResume={(applicationId, applicationName) =>
+            void runAction(async () => resumeApplication(applicationId), `${applicationName} を再開しました。`)
+          }
           onRestart={(applicationId, applicationName) =>
             void runAction(async () => restartApplication(applicationId), `${applicationName} を再起動しました。`)
           }

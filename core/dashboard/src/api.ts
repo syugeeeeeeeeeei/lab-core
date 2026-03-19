@@ -102,6 +102,18 @@ export async function restartApplication(applicationId: string): Promise<void> {
   });
 }
 
+export async function stopApplication(applicationId: string): Promise<void> {
+  await requestJson(`/api/applications/${applicationId}/stop`, {
+    method: "POST"
+  });
+}
+
+export async function resumeApplication(applicationId: string): Promise<void> {
+  await requestJson(`/api/applications/${applicationId}/resume`, {
+    method: "POST"
+  });
+}
+
 export async function rebuildApplication(applicationId: string, keepData: boolean): Promise<void> {
   await requestJson(`/api/applications/${applicationId}/rebuild`, {
     method: "POST",

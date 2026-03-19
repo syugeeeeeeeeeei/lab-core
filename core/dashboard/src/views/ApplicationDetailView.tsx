@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ComposeInspectDialog } from "../components/ComposeInspectDialog";
 import type { ApplicationDetail, ApplicationListItem, ComposeServiceCandidate, DeleteMode } from "../types";
 import { jobStatusBadgeClass, logLineClass, shortCommit, statusBadgeClass, toLocale } from "../ui";
 
@@ -19,6 +20,7 @@ type DeploymentFormState = {
   publicPort: string;
   hostname: string;
   keepVolumesOnRebuild: boolean;
+  envOverrides: Record<string, string>;
 };
 
 type DeploymentComposeState = {
@@ -27,6 +29,7 @@ type DeploymentComposeState = {
   yamlFiles: string[];
   services: ComposeServiceCandidate[];
   selectedComposePath: string;
+  inspection: ApplicationDetail["composeInspection"];
   warning: string;
 };
 
@@ -43,10 +46,13 @@ type ApplicationDetailViewProps = {
   deleteConfirmText: string;
   onBackToApplications: () => void;
   onDeploymentFieldChange: <K extends keyof DeploymentFormState>(key: K, value: DeploymentFormState[K]) => void;
+  onDeploymentEnvironmentOverrideChange: (name: string, value: string) => void;
   onSelectDeploymentCompose: (composePath: string) => void;
   onSelectDeploymentService: (service: ComposeServiceCandidate) => void;
   onResetDeployment: () => void;
   onSaveDeployment: () => void;
+  onStop: (applicationId: string, applicationName: string) => void;
+  onResume: (applicationId: string, applicationName: string) => void;
   onRestart: (applicationId: string, applicationName: string) => void;
   onRebuild: (applicationId: string, applicationName: string) => void;
   onCheckUpdate: (applicationId: string, applicationName: string) => void;
@@ -76,10 +82,13 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
     deleteConfirmText,
     onBackToApplications,
     onDeploymentFieldChange,
+    onDeploymentEnvironmentOverrideChange,
     onSelectDeploymentCompose,
     onSelectDeploymentService,
     onResetDeployment,
     onSaveDeployment,
+    onStop,
+    onResume,
     onRestart,
     onRebuild,
     onCheckUpdate,
@@ -95,8 +104,10 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
     onDeleteSubmit
   } = props;
   const logViewerRef = useRef<HTMLDivElement | null>(null);
+  const [deploymentExpanded, setDeploymentExpanded] = useState(true);
   const [eventsExpanded, setEventsExpanded] = useState(true);
   const [logsExpanded, setLogsExpanded] = useState(false);
+  const [inspectDialogOpen, setInspectDialogOpen] = useState(false);
 
   useEffect(() => {
     if (!logs.opened || !logs.autoScroll || !logViewerRef.current) {
@@ -106,8 +117,10 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
   }, [logs.autoScroll, logs.lines, logs.opened]);
 
   useEffect(() => {
+    setDeploymentExpanded(true);
     setEventsExpanded(true);
     setLogsExpanded(false);
+    setInspectDialogOpen(false);
   }, [application?.application_id]);
 
   if (!application) {
@@ -129,6 +142,11 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
   const deployment = detail?.deployment;
   const composeCandidates = deploymentComposeState.composeCandidates;
   const otherYamlFiles = deploymentComposeState.yamlFiles.filter((yamlPath) => !composeCandidates.includes(yamlPath));
+  const environmentRequirements = deploymentComposeState.inspection?.environmentRequirements ?? [];
+  const environmentRequirementMap = new Map(environmentRequirements.map((requirement) => [requirement.name, requirement]));
+  const envOverrideKeys = [...new Set([...environmentRequirements.map((requirement) => requirement.name), ...Object.keys(deploymentForm.envOverrides)])]
+    .sort((a, b) => a.localeCompare(b));
+  const deploymentEnabled = detail?.deployment?.enabled ?? currentApplication.status !== "Stopped";
 
   function toggleLogsPanel(): void {
     const nextExpanded = !logsExpanded;
@@ -153,6 +171,7 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
           <p>
             状態: <span className={statusBadgeClass(currentApplication.status)}>{currentApplication.status}</span>
           </p>
+          <p>公開状態: {deploymentEnabled ? "有効" : "停止中"}</p>
           <p>
             公開先:{" "}
             <a href={`http://${currentApplication.hostname}`} target="_blank" rel="noreferrer">
@@ -191,7 +210,22 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
         ) : null}
 
         <div className="detail-actions">
-          <button type="button" className="button tiny" onClick={() => onRestart(currentApplication.application_id, currentApplication.name)}>
+          {deploymentEnabled ? (
+            <button type="button" className="button tiny secondary" onClick={() => onStop(currentApplication.application_id, currentApplication.name)}>
+              停止
+            </button>
+          ) : (
+            <button type="button" className="button tiny primary" onClick={() => onResume(currentApplication.application_id, currentApplication.name)}>
+              再開
+            </button>
+          )}
+          <button
+            type="button"
+            className="button tiny"
+            onClick={() => onRestart(currentApplication.application_id, currentApplication.name)}
+            disabled={!deploymentEnabled}
+            title={!deploymentEnabled ? "停止中は再開してから再起動してください" : ""}
+          >
             再起動
           </button>
           <button type="button" className="button tiny secondary" onClick={() => onRebuild(currentApplication.application_id, currentApplication.name)}>
@@ -215,18 +249,47 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
         </div>
       </section>
 
-      <section className="panel-card">
-        <div className="panel-head">
+      <section className={`panel-card accordion-card ${deploymentExpanded ? "open" : ""}`}>
+        <button
+          type="button"
+          className="accordion-toggle"
+          onClick={() => setDeploymentExpanded((prev) => !prev)}
+          aria-expanded={deploymentExpanded}
+        >
           <div>
             <h2>デプロイ設定</h2>
-            <p className="panel-sub">保存すると公開先と次回以降の配備設定に反映されます。</p>
+            <p className="panel-sub">
+              保存すると公開先と次回以降の配備設定に反映されます。
+              {detailLoading ? " 読み込み中..." : ""}
+            </p>
           </div>
-          {detailLoading ? <p className="panel-sub">読み込み中...</p> : null}
-        </div>
+          <span className="accordion-meta">{deploymentExpanded ? "折りたたむ" : "開く"}</span>
+        </button>
 
+        <div className={`accordion-body-wrap ${deploymentExpanded ? "open" : ""}`}>
+          <div className="accordion-body-inner">
+            <div className="accordion-body">
         {deployment ? (
           <>
             <div className="deployment-picker-section">
+              <div className="compose-summary-row">
+                <p>
+                  選択中: <code>{deploymentForm.composePath}</code>
+                </p>
+                {deploymentComposeState.inspection ? (
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="取得した YAML と解析結果を表示"
+                    title="取得した YAML と解析結果を表示"
+                    onClick={() => setInspectDialogOpen(true)}
+                    disabled={deploymentComposeState.status === "loading"}
+                  >
+                    i
+                  </button>
+                ) : null}
+              </div>
+
               <p className="hint">compose 候補から選択</p>
               {composeCandidates.length > 0 ? (
                 <div className="chip-list">
@@ -289,7 +352,11 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
                   ))}
                 </div>
               ) : (
-                <p className="hint warning">compose を選ぶとサービス候補が表示されます。</p>
+                <p className="hint warning">
+                  {deploymentComposeState.inspection?.parseError
+                    ? "YAML の parse に失敗しました。上の i ボタンから raw YAML と parse error を確認できます。"
+                    : "compose を選ぶとサービス候補が表示されます。"}
+                </p>
               )}
             </div>
 
@@ -322,6 +389,40 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
               再ビルド時にデータを保持する
             </label>
 
+            {envOverrideKeys.length > 0 ? (
+              <div className="deployment-picker-section">
+                <p className="hint">compose から検出した環境変数</p>
+                <div className="env-override-grid">
+                  {envOverrideKeys.map((name) => {
+                    const requirement = environmentRequirementMap.get(name);
+                    return (
+                      <label key={name} className="env-override-card">
+                        <span>
+                          {name}
+                          {requirement?.required ? " *" : ""}
+                        </span>
+                        <input
+                          value={deploymentForm.envOverrides[name] ?? ""}
+                          onChange={(event) => onDeploymentEnvironmentOverrideChange(name, event.target.value)}
+                          placeholder={requirement?.defaultValue ?? "値を入力"}
+                        />
+                        <small className="hint">
+                          {requirement
+                            ? `services: ${requirement.services.join(", ")}`
+                            : "保存済み override"}
+                          {requirement?.required
+                            ? " / 必須"
+                            : requirement && requirement.defaultValue !== null
+                              ? ` / 既定値: ${requirement.defaultValue}`
+                              : ""}
+                        </small>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
             <div className="detail-actions">
               <button
                 type="button"
@@ -346,6 +447,9 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
             {detailLoading ? "配備設定を読み込んでいます..." : "このアプリの配備設定はまだ取得できていません。"}
           </p>
         )}
+            </div>
+          </div>
+        </div>
       </section>
 
       <section className={`panel-card accordion-card ${eventsExpanded ? "open" : ""}`}>
@@ -362,8 +466,9 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
           <span className="accordion-meta">{recentEvents.length} 件 / {eventsExpanded ? "折りたたむ" : "開く"}</span>
         </button>
 
-        {eventsExpanded ? (
-          <div className="accordion-body detail-events-scroll">
+        <div className={`accordion-body-wrap ${eventsExpanded ? "open" : ""}`}>
+          <div className="accordion-body-inner">
+            <div className="accordion-body detail-events-scroll">
             {recentEvents.length === 0 ? (
               <p className="empty-message">
                 {detailLoading ? "イベントを読み込んでいます..." : "このアプリに紐づくイベントはまだありません。"}
@@ -387,8 +492,9 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
                 ))}
               </ul>
             )}
+            </div>
           </div>
-        ) : null}
+        </div>
       </section>
 
       <section className={`panel-card accordion-card ${logsExpanded ? "open" : ""}`}>
@@ -402,8 +508,9 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
           <span className="accordion-meta">{logsExpanded ? "折りたたむ" : "開く"}</span>
         </button>
 
-        {logsExpanded ? (
-          <div className="accordion-body">
+        <div className={`accordion-body-wrap ${logsExpanded ? "open" : ""}`}>
+          <div className="accordion-body-inner">
+            <div className="accordion-body">
             <div className="logs-controls">
               <label>
                 サービス
@@ -461,8 +568,9 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
                 </ul>
               )}
             </div>
+            </div>
           </div>
-        ) : null}
+        </div>
       </section>
 
       <section className="panel-card danger-card">
@@ -492,6 +600,13 @@ export function ApplicationDetailView(props: ApplicationDetailViewProps) {
           </button>
         </div>
       </section>
+
+      <ComposeInspectDialog
+        open={inspectDialogOpen}
+        title="Compose Inspection"
+        inspection={deploymentComposeState.inspection}
+        onClose={() => setInspectDialogOpen(false)}
+      />
     </div>
   );
 }

@@ -18,6 +18,8 @@ export type JobType =
   | "clone"
   | "build"
   | "deploy"
+  | "stop"
+  | "resume"
   | "rebuild"
   | "delete"
   | "update"

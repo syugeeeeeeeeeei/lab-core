@@ -25,6 +25,14 @@ export type SystemStatus = {
     udpListening: boolean;
     tcpListening: boolean;
     lastError: string | null;
+    relay?: {
+      required: boolean;
+      targetHost: string;
+      targetPort: number;
+      udpReachable: boolean;
+      tcpReachable: boolean;
+      lastError: string | null;
+    };
   };
 };
 
@@ -77,6 +85,7 @@ export type CreateApplicationPayload = {
   mode: "standard" | "headless";
   keepVolumesOnRebuild: boolean;
   deviceRequirements: string[];
+  envOverrides: Record<string, string>;
 };
 
 export type CreateApplicationResponse = {
@@ -109,11 +118,51 @@ export type ComposeServiceCandidate = {
   reason: string;
 };
 
-export type ImportComposeInspectResponse = {
-  composePath: string;
-  services: ComposeServiceCandidate[];
-  warning?: string;
+export type ComposeInspectionSource = {
+  kind: "github" | "local";
+  path: string;
+  repositoryUrl?: string;
+  branch?: string;
+  blobUrl?: string;
+  absolutePath?: string;
 };
+
+export type ComposeEnvironmentRequirement = {
+  name: string;
+  required: boolean;
+  defaultValue: string | null;
+  services: string[];
+};
+
+export type ComposeInspectionPayload = {
+  composeCandidates: string[];
+  yamlFiles: string[];
+  recommendedComposePath: string | null;
+  selectedComposePath: string;
+  services: ComposeServiceCandidate[];
+  environmentRequirements: ComposeEnvironmentRequirement[];
+  serviceEnvironmentRequirements: Array<{
+    serviceName: string;
+    variables: Array<{
+      name: string;
+      required: boolean;
+      defaultValue: string | null;
+    }>;
+  }>;
+  detectedDeviceRequirements: string[];
+  serviceDeviceRequirements: Array<{
+    serviceName: string;
+    devicePaths: string[];
+  }>;
+  rawYaml: string;
+  parsedYaml: unknown | null;
+  parseError: string | null;
+  parseWarnings: string[];
+  analysisWarnings: string[];
+  source: ComposeInspectionSource;
+};
+
+export type ImportComposeInspectResponse = ComposeInspectionPayload;
 
 export type DeleteMode = "config_only" | "source_and_config" | "full";
 
@@ -142,6 +191,7 @@ export type ApplicationDeployment = {
   mode: "standard" | "headless";
   keep_volumes_on_rebuild: boolean;
   device_requirements: string[];
+  env_overrides: Record<string, string>;
   enabled: boolean;
 };
 
@@ -169,14 +219,7 @@ export type ApplicationUpdateInfo = {
   checked_at: string;
 };
 
-export type ApplicationComposeInspection = {
-  composeCandidates: string[];
-  yamlFiles: string[];
-  recommendedComposePath: string | null;
-  selectedComposePath: string;
-  services: ComposeServiceCandidate[];
-  warning?: string;
-};
+export type ApplicationComposeInspection = ComposeInspectionPayload;
 
 export type ApplicationDetail = {
   application: {
@@ -205,4 +248,5 @@ export type UpdateDeploymentPayload = {
   publicPort: number;
   hostname: string;
   keepVolumesOnRebuild: boolean;
+  envOverrides: Record<string, string>;
 };

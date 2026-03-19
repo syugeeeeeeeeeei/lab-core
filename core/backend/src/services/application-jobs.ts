@@ -5,6 +5,7 @@ import { db, nowIso } from "../lib/db.js";
 import { env } from "../lib/env.js";
 import type { JobStatus } from "../types.js";
 import { runCommand } from "./command-runner.js";
+import { chooseRecommendedComposeService, inspectComposeYaml } from "./compose-inspection.js";
 import { buildComposeProjectName } from "./compose-project.js";
 import { recordEvent } from "./events.js";
 import { finishJob, setJobProgress, startJob } from "./jobs.js";
@@ -18,13 +19,7 @@ type AppDeploymentRow = {
   compose_path: string;
   public_service_name: string;
   public_port: number;
-};
-
-type ComposeServiceInspection = {
-  name: string;
-  portOptions: number[];
-  detectedPublicPort: number | null;
-  likelyPublic: boolean;
+  env_overrides: string;
 };
 
 function ensureRuntimeRoots(): void {
@@ -53,7 +48,8 @@ function getAppDeployment(applicationId: string): AppDeploymentRow {
           a.default_branch,
           d.compose_path,
           d.public_service_name,
-          d.public_port
+          d.public_port,
+          d.env_overrides
         FROM applications a
         INNER JOIN deployments d ON d.application_id = a.application_id
         WHERE a.application_id = ?
@@ -68,319 +64,57 @@ function getAppDeployment(applicationId: string): AppDeploymentRow {
   return row;
 }
 
-function parseInlineList(value: string): string[] {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
-    return [];
-  }
-
-  const inner = trimmed.slice(1, -1);
-  const items: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | null = null;
-
-  for (const char of inner) {
-    if ((char === "'" || char === '"') && quote === null) {
-      quote = char;
-      current += char;
-      continue;
+function parseEnvOverrides(value: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
     }
-    if (quote && char === quote) {
-      quote = null;
-      current += char;
-      continue;
-    }
-    if (char === "," && quote === null) {
-      if (current.trim().length > 0) {
-        items.push(current.trim());
-      }
-      current = "";
-      continue;
-    }
-    current += char;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
+        .map(([key, entryValue]) => [key, entryValue])
+    );
+  } catch {
+    return {};
   }
-
-  if (current.trim().length > 0) {
-    items.push(current.trim());
-  }
-
-  return items.map((item) => item.trim().replace(/^['"]|['"]$/g, ""));
 }
 
-function stripYamlComment(line: string): string {
-  let result = "";
-  let quote: "'" | '"' | null = null;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    if ((char === "'" || char === '"') && quote === null) {
-      quote = char;
-      result += char;
-      continue;
-    }
-    if (quote && char === quote) {
-      quote = null;
-      result += char;
-      continue;
-    }
-    if (char === "#" && quote === null) {
-      break;
-    }
-    result += char;
-  }
-
-  return result.trimEnd();
+function quoteEnvFileValue(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/"/g, '\\"')}"`;
 }
 
-function parseServiceKey(value: string): string | null {
-  const match = value.match(/^["']?([^"':]+)["']?:\s*$/);
-  return match ? match[1].trim() : null;
-}
-
-function parsePortNumber(value: string): number | null {
-  const match = value.match(/(\d+)/);
-  if (!match) {
+function writeComposeEnvFile(app: AppDeploymentRow): string | null {
+  const envOverrides = parseEnvOverrides(app.env_overrides);
+  const entries = Object.entries(envOverrides).filter(([, value]) => value.trim().length > 0);
+  if (entries.length === 0) {
     return null;
   }
-  const parsed = Number(match[1]);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+
+  const appDataPath = path.join(env.appDataRoot, app.name);
+  fs.mkdirSync(appDataPath, { recursive: true });
+
+  const envFilePath = path.join(appDataPath, ".lab-core.compose.env");
+  const lines = entries
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([key, value]) => `${key}=${quoteEnvFileValue(value)}`);
+
+  fs.writeFileSync(envFilePath, `${lines.join("\n")}\n`, "utf8");
+  return envFilePath;
 }
 
-function parseShortPortMapping(value: string): { target: number | null; published: number | null } {
-  const normalized = value.trim().replace(/^['"]|['"]$/g, "").replace(/\/(tcp|udp)$/i, "");
-  if (normalized.length === 0) {
-    return { target: null, published: null };
+function buildComposeArgs(
+  composeFilePath: string,
+  composeProjectName: string,
+  subcommandArgs: string[],
+  envFilePath: string | null
+): string[] {
+  const args = ["compose", "-p", composeProjectName, "-f", composeFilePath];
+  if (envFilePath) {
+    args.push("--env-file", envFilePath);
   }
-
-  const directPort = parsePortNumber(normalized);
-  if (!normalized.includes(":")) {
-    return { target: directPort, published: null };
-  }
-
-  const segments = normalized.split(":");
-  const target = parsePortNumber(segments[segments.length - 1] ?? "");
-  let published: number | null = null;
-
-  for (let index = segments.length - 2; index >= 0; index -= 1) {
-    const parsed = parsePortNumber(segments[index] ?? "");
-    if (parsed !== null) {
-      published = parsed;
-      break;
-    }
-  }
-
-  return { target, published };
-}
-
-function chooseDetectedPort(portOptions: number[]): number | null {
-  const preferred = [80, 443, 3000, 8080, 8000, 5173, 4173, 5000, 8501, 8888];
-  for (const port of preferred) {
-    if (portOptions.includes(port)) {
-      return port;
-    }
-  }
-  return portOptions[0] ?? null;
-}
-
-function chooseRecommendedComposeService(services: ComposeServiceInspection[]): ComposeServiceInspection | null {
-  return services.find((service) => service.likelyPublic && service.detectedPublicPort !== null)
-    ?? services.find((service) => service.detectedPublicPort !== null)
-    ?? services[0]
-    ?? null;
-}
-
-function parseComposeServices(content: string): ComposeServiceInspection[] {
-  const lines = content.replace(/\r/g, "").split("\n");
-  const services = new Map<string, { targetPorts: Set<number>; publishedPorts: Set<number>; exposePorts: Set<number> }>();
-
-  let inServices = false;
-  let servicesIndent = -1;
-  let currentService: string | null = null;
-  let currentServiceIndent = -1;
-  let currentSection: "ports" | "expose" | null = null;
-  let currentPortMap: { target: number | null; published: number | null } | null = null;
-  let currentPortItemIndent = -1;
-
-  function ensureService(name: string) {
-    if (!services.has(name)) {
-      services.set(name, {
-        targetPorts: new Set<number>(),
-        publishedPorts: new Set<number>(),
-        exposePorts: new Set<number>()
-      });
-    }
-    return services.get(name)!;
-  }
-
-  function finalizePortMap(): void {
-    if (!currentService || !currentPortMap) {
-      return;
-    }
-    const service = ensureService(currentService);
-    if (currentPortMap.target !== null) {
-      service.targetPorts.add(currentPortMap.target);
-    }
-    if (currentPortMap.published !== null) {
-      service.publishedPorts.add(currentPortMap.published);
-    }
-    currentPortMap = null;
-    currentPortItemIndent = -1;
-  }
-
-  for (const rawLine of lines) {
-    const line = stripYamlComment(rawLine.replace(/\t/g, "  "));
-    const trimmed = line.trim();
-    if (trimmed.length === 0) {
-      continue;
-    }
-
-    const indent = line.length - line.trimStart().length;
-
-    if (!inServices) {
-      if (trimmed === "services:") {
-        inServices = true;
-        servicesIndent = indent;
-      }
-      continue;
-    }
-
-    if (indent <= servicesIndent) {
-      finalizePortMap();
-      break;
-    }
-
-    if (currentPortMap && indent <= currentPortItemIndent) {
-      finalizePortMap();
-    }
-
-    const serviceKey = !trimmed.startsWith("- ") ? parseServiceKey(trimmed) : null;
-    if (serviceKey && indent > servicesIndent && (currentService === null || indent <= currentServiceIndent)) {
-      finalizePortMap();
-      currentService = serviceKey;
-      currentServiceIndent = indent;
-      currentSection = null;
-      ensureService(serviceKey);
-      continue;
-    }
-
-    if (!currentService) {
-      continue;
-    }
-
-    if (indent <= currentServiceIndent) {
-      finalizePortMap();
-      currentService = null;
-      currentSection = null;
-      continue;
-    }
-
-    if (!currentPortMap && !trimmed.startsWith("- ") && indent > currentServiceIndent) {
-      const keyMatch = trimmed.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
-      if (!keyMatch) {
-        currentSection = null;
-        continue;
-      }
-
-      const [, key, value] = keyMatch;
-      if (key !== "ports" && key !== "expose") {
-        currentSection = null;
-        continue;
-      }
-
-      currentSection = key;
-      const normalizedValue = value.trim();
-      const service = ensureService(currentService);
-      if (normalizedValue.length > 0) {
-        const inlineValues = parseInlineList(normalizedValue);
-        const values = inlineValues.length > 0 ? inlineValues : [normalizedValue];
-        for (const entry of values) {
-          if (currentSection === "ports") {
-            const parsedPort = parseShortPortMapping(entry);
-            if (parsedPort.target !== null) {
-              service.targetPorts.add(parsedPort.target);
-            }
-            if (parsedPort.published !== null) {
-              service.publishedPorts.add(parsedPort.published);
-            }
-          } else {
-            const exposePort = parsePortNumber(entry);
-            if (exposePort !== null) {
-              service.exposePorts.add(exposePort);
-            }
-          }
-        }
-      }
-      continue;
-    }
-
-    if (!currentSection || indent <= currentServiceIndent) {
-      continue;
-    }
-
-    const service = ensureService(currentService);
-
-    if (trimmed.startsWith("- ")) {
-      finalizePortMap();
-      const itemValue = trimmed.slice(2).trim();
-      if (currentSection === "ports") {
-        if (/^(target|published|protocol|host_ip|mode):/.test(itemValue) || itemValue.length === 0) {
-          currentPortMap = { target: null, published: null };
-          currentPortItemIndent = indent;
-          if (itemValue.length > 0) {
-            const [rawKey, rawValue] = itemValue.split(":", 2);
-            const mapValue = parsePortNumber(rawValue ?? "");
-            if (rawKey.trim() === "target") {
-              currentPortMap.target = mapValue;
-            }
-            if (rawKey.trim() === "published") {
-              currentPortMap.published = mapValue;
-            }
-          }
-        } else {
-          const parsedPort = parseShortPortMapping(itemValue);
-          if (parsedPort.target !== null) {
-            service.targetPorts.add(parsedPort.target);
-          }
-          if (parsedPort.published !== null) {
-            service.publishedPorts.add(parsedPort.published);
-          }
-        }
-      } else {
-        const exposePort = parsePortNumber(itemValue);
-        if (exposePort !== null) {
-          service.exposePorts.add(exposePort);
-        }
-      }
-      continue;
-    }
-
-    if (currentSection === "ports" && currentPortMap) {
-      const [rawKey, rawValue] = trimmed.split(":", 2);
-      const mapValue = parsePortNumber(rawValue ?? "");
-      if (rawKey.trim() === "target") {
-        currentPortMap.target = mapValue;
-      }
-      if (rawKey.trim() === "published") {
-        currentPortMap.published = mapValue;
-      }
-    }
-  }
-
-  finalizePortMap();
-
-  return [...services.entries()].map(([name, service]) => {
-    const portOptions = [...new Set([...service.targetPorts, ...service.exposePorts])].sort((a, b) => a - b);
-    const hasNameHint = /web|app|frontend|front|ui|http|nginx|caddy|server/i.test(name);
-    const detectedPublicPort = chooseDetectedPort(portOptions);
-    const likelyPublic = hasNameHint || (detectedPublicPort !== null && [80, 443, 3000, 8080, 8000, 5173].includes(detectedPublicPort));
-
-    return {
-      name,
-      portOptions,
-      detectedPublicPort,
-      likelyPublic
-    };
-  });
+  args.push(...subcommandArgs);
+  return args;
 }
 
 export function reconcileDeploymentRouting(
@@ -399,7 +133,26 @@ export function reconcileDeploymentRouting(
   }
 
   const content = fs.readFileSync(composeFilePath, "utf8");
-  const services = parseComposeServices(content);
+  const inspection = inspectComposeYaml({
+    rawYaml: content,
+    selectedComposePath: path.basename(composeFilePath),
+    source: {
+      kind: "local",
+      path: path.basename(composeFilePath),
+      absolutePath: composeFilePath
+    }
+  });
+
+  if (inspection.parseError) {
+    return {
+      serviceName: configuredServiceName,
+      port: configuredPort,
+      corrected: false,
+      reason: `compose の YAML 解析に失敗したため現在設定を維持しました。${inspection.parseError}`
+    };
+  }
+
+  const services = inspection.services;
   if (services.length === 0) {
     return {
       serviceName: configuredServiceName,
@@ -573,23 +326,43 @@ async function ensureRepository(app: AppDeploymentRow): Promise<{ repoPath: stri
   return { repoPath, headCommit };
 }
 
-async function runComposeUp(repoPath: string, composeFilePath: string, composeProjectName: string): Promise<void> {
-  await runCommand("docker", ["compose", "-p", composeProjectName, "-f", composeFilePath, "up", "-d", "--build"], {
+async function runComposeUp(
+  repoPath: string,
+  composeFilePath: string,
+  composeProjectName: string,
+  envFilePath: string | null
+): Promise<void> {
+  await runCommand("docker", buildComposeArgs(composeFilePath, composeProjectName, ["up", "-d", "--build"], envFilePath), {
     cwd: repoPath
   });
 }
 
-async function runComposeRestart(repoPath: string, composeFilePath: string, composeProjectName: string): Promise<void> {
-  await runCommand("docker", ["compose", "-p", composeProjectName, "-f", composeFilePath, "restart"], { cwd: repoPath });
+async function runComposeRestart(
+  repoPath: string,
+  composeFilePath: string,
+  composeProjectName: string,
+  envFilePath: string | null
+): Promise<void> {
+  await runCommand("docker", buildComposeArgs(composeFilePath, composeProjectName, ["restart"], envFilePath), { cwd: repoPath });
+}
+
+async function runComposeStop(
+  repoPath: string,
+  composeFilePath: string,
+  composeProjectName: string,
+  envFilePath: string | null
+): Promise<void> {
+  await runCommand("docker", buildComposeArgs(composeFilePath, composeProjectName, ["stop"], envFilePath), { cwd: repoPath });
 }
 
 async function runComposeDown(
   repoPath: string,
   composeFilePath: string,
   composeProjectName: string,
+  envFilePath: string | null,
   keepData: boolean
 ): Promise<void> {
-  const args = ["compose", "-p", composeProjectName, "-f", composeFilePath, "down"];
+  const args = buildComposeArgs(composeFilePath, composeProjectName, ["down"], envFilePath);
   if (!keepData) {
     args.push("-v");
   }
@@ -598,6 +371,24 @@ async function runComposeDown(
 
 function completeJob(jobId: string, status: Extract<JobStatus, "succeeded" | "failed">, message: string): void {
   finishJob(jobId, status, message);
+}
+
+function setDeploymentEnabled(applicationId: string, enabled: boolean): void {
+  db.prepare(
+    `
+      UPDATE deployments
+      SET enabled = ?
+      WHERE application_id = ?
+    `
+  ).run(enabled ? 1 : 0, applicationId);
+
+  db.prepare(
+    `
+      UPDATE routes
+      SET enabled = ?
+      WHERE application_id = ?
+    `
+  ).run(enabled ? 1 : 0, applicationId);
 }
 
 function recordDeployProgress(applicationId: string, title: string, message: string): void {
@@ -626,13 +417,14 @@ export async function executeDeployJob(applicationId: string, jobId: string): Pr
     setJobProgress(jobId, `リポジトリ取得完了。commit ${headCommit.slice(0, 12)} を配備準備中です。`);
     recordDeployProgress(applicationId, "リポジトリ取得が完了しました", `commit ${headCommit} を取得しました。`);
     const composeFilePath = path.resolve(repoPath, app.compose_path);
+    const envFilePath = writeComposeEnvFile(app);
     setJobProgress(jobId, `docker compose を起動しています。compose=${app.compose_path}`);
     recordDeployProgress(
       applicationId,
       "コンテナを起動しています",
-      `docker compose -p ${composeProjectName} -f ${composeFilePath} up -d --build を実行しています。`
+      `docker compose -p ${composeProjectName} -f ${composeFilePath}${envFilePath ? ` --env-file ${envFilePath}` : ""} up -d --build を実行しています。`
     );
-    await runComposeUp(repoPath, composeFilePath, composeProjectName);
+    await runComposeUp(repoPath, composeFilePath, composeProjectName, envFilePath);
     const routing = reconcileDeploymentRouting(applicationId, composeFilePath, app.public_service_name, app.public_port);
     if (routing.corrected) {
       recordEvent({
@@ -710,7 +502,8 @@ export async function executeUpdateJob(applicationId: string, jobId: string): Pr
     const afterCommit = (await git.revparse(["HEAD"])).trim();
 
     const composeFilePath = path.resolve(repoPath, app.compose_path);
-    await runComposeUp(repoPath, composeFilePath, composeProjectName);
+    const envFilePath = writeComposeEnvFile(app);
+    await runComposeUp(repoPath, composeFilePath, composeProjectName, envFilePath);
     const routing = reconcileDeploymentRouting(applicationId, composeFilePath, app.public_service_name, app.public_port);
     if (routing.corrected) {
       recordEvent({
@@ -793,7 +586,8 @@ export async function executeRollbackJob(applicationId: string, jobId: string): 
     await git.checkout(rollbackTarget);
 
     const composeFilePath = path.resolve(repoPath, app.compose_path);
-    await runComposeUp(repoPath, composeFilePath, composeProjectName);
+    const envFilePath = writeComposeEnvFile(app);
+    await runComposeUp(repoPath, composeFilePath, composeProjectName, envFilePath);
     const routing = reconcileDeploymentRouting(applicationId, composeFilePath, app.public_service_name, app.public_port);
     if (routing.corrected) {
       recordEvent({
@@ -857,8 +651,9 @@ export async function executeRebuildJob(applicationId: string, jobId: string, ke
     ).run(keepData ? 1 : 0, applicationId);
 
     const composeFilePath = path.resolve(repoPath, app.compose_path);
-    await runComposeDown(repoPath, composeFilePath, composeProjectName, keepData);
-    await runComposeUp(repoPath, composeFilePath, composeProjectName);
+    const envFilePath = writeComposeEnvFile(app);
+    await runComposeDown(repoPath, composeFilePath, composeProjectName, envFilePath, keepData);
+    await runComposeUp(repoPath, composeFilePath, composeProjectName, envFilePath);
     const routing = reconcileDeploymentRouting(applicationId, composeFilePath, app.public_service_name, app.public_port);
     if (routing.corrected) {
       recordEvent({
@@ -909,7 +704,8 @@ export async function executeRestartJob(applicationId: string, jobId: string): P
     }
 
     const composeFilePath = path.resolve(repoPath, app.compose_path);
-    await runComposeRestart(repoPath, composeFilePath, composeProjectName);
+    const envFilePath = writeComposeEnvFile(app);
+    await runComposeRestart(repoPath, composeFilePath, composeProjectName, envFilePath);
 
     setAppStatus(applicationId, "Running");
     completeJob(jobId, "succeeded", "restart 完了");
@@ -936,6 +732,104 @@ export async function executeRestartJob(applicationId: string, jobId: string): P
   }
 }
 
+export async function executeStopJob(applicationId: string, jobId: string): Promise<void> {
+  const app = getAppDeployment(applicationId);
+  const composeProjectName = buildComposeProjectName(app.application_id, app.name);
+  startJob(jobId, "stop ジョブを開始しました。");
+
+  try {
+    const repoPath = path.join(env.appsRoot, app.name);
+    if (!fs.existsSync(repoPath)) {
+      throw new Error(`アプリソースが見つかりません: ${repoPath}`);
+    }
+
+    setAppStatus(applicationId, "Deploying");
+    const composeFilePath = path.resolve(repoPath, app.compose_path);
+    const envFilePath = writeComposeEnvFile(app);
+    await runComposeStop(repoPath, composeFilePath, composeProjectName, envFilePath);
+
+    setDeploymentEnabled(applicationId, false);
+    setAppStatus(applicationId, "Stopped");
+    syncInfrastructure(`stop:${app.name}`);
+    completeJob(jobId, "succeeded", "stop 完了");
+
+    recordEvent({
+      scope: "runtime",
+      applicationId,
+      level: "warning",
+      title: "アプリを停止しました",
+      message: `アプリ ${app.name} を停止しました。mode=${env.executionMode}`
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "不明なエラー";
+    setAppStatus(applicationId, "Failed");
+    completeJob(jobId, "failed", message);
+
+    recordEvent({
+      scope: "runtime",
+      applicationId,
+      level: "error",
+      title: "停止に失敗しました",
+      message
+    });
+  }
+}
+
+export async function executeResumeJob(applicationId: string, jobId: string): Promise<void> {
+  const app = getAppDeployment(applicationId);
+  const composeProjectName = buildComposeProjectName(app.application_id, app.name);
+  startJob(jobId, "resume ジョブを開始しました。");
+
+  try {
+    const repoPath = path.join(env.appsRoot, app.name);
+    if (!fs.existsSync(repoPath)) {
+      throw new Error(`アプリソースが見つかりません: ${repoPath}`);
+    }
+
+    setDeploymentEnabled(applicationId, true);
+    syncInfrastructure(`resume-pending:${app.name}`);
+
+    setAppStatus(applicationId, "Deploying");
+    const composeFilePath = path.resolve(repoPath, app.compose_path);
+    const envFilePath = writeComposeEnvFile(app);
+    await runComposeUp(repoPath, composeFilePath, composeProjectName, envFilePath);
+    const routing = reconcileDeploymentRouting(applicationId, composeFilePath, app.public_service_name, app.public_port);
+    if (routing.corrected) {
+      recordEvent({
+        scope: "runtime",
+        applicationId,
+        level: "warning",
+        title: "公開先設定を補正しました",
+        message: routing.reason
+      });
+    }
+
+    setAppStatus(applicationId, "Running");
+    syncInfrastructure(`resume:${app.name}`);
+    completeJob(jobId, "succeeded", "resume 完了");
+
+    recordEvent({
+      scope: "runtime",
+      applicationId,
+      level: "info",
+      title: "アプリを再開しました",
+      message: `アプリ ${app.name} を再開しました。mode=${env.executionMode}`
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "不明なエラー";
+    setAppStatus(applicationId, "Failed");
+    completeJob(jobId, "failed", message);
+
+    recordEvent({
+      scope: "runtime",
+      applicationId,
+      level: "error",
+      title: "再開に失敗しました",
+      message
+    });
+  }
+}
+
 type DeleteMode = "config_only" | "source_and_config" | "full";
 
 export async function executeDeleteJob(applicationId: string, jobId: string, mode: DeleteMode): Promise<void> {
@@ -951,7 +845,8 @@ export async function executeDeleteJob(applicationId: string, jobId: string, mod
 
     if (fs.existsSync(repoPath)) {
       const composeFilePath = path.resolve(repoPath, app.compose_path);
-      await runComposeDown(repoPath, composeFilePath, composeProjectName, mode !== "full");
+      const envFilePath = writeComposeEnvFile(app);
+      await runComposeDown(repoPath, composeFilePath, composeProjectName, envFilePath, mode !== "full");
     }
 
     if (mode === "source_and_config" || mode === "full") {
