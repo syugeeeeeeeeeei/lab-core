@@ -81,7 +81,11 @@ function parseEnvOverrides(value: string): Record<string, string> {
 }
 
 function quoteEnvFileValue(value: string): string {
-  return `"${value.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/"/g, '\\"')}"`;
+  return `"${value
+    .replace(/\\/g, "\\\\")
+    .replace(/\n/g, "\\n")
+    .replace(/\$/g, "$$$$")
+    .replace(/"/g, '\\"')}"`;
 }
 
 function writeComposeEnvFile(app: AppDeploymentRow): string | null {
