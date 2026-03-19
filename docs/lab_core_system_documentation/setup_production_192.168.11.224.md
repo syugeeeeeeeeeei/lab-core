@@ -107,15 +107,13 @@ yarn config:init
 
 ## 6. 起動
 
-### 6.1 研究室向け bind 設定を付けて起動
+### 6.1 研究室向け起動
 
-`proxy` と `dns` は既定だと loopback bind なので、本番では起動時に bind を明示します。
+`proxy` と `dns` は既定だと loopback bind なので、本番では `0.0.0.0` bind を付けたラッパーコマンドを使います。
 
 ```bash
 cd /opt/lab-core
-LAB_CORE_PROXY_HTTP_BIND=0.0.0.0:80 \
-LAB_CORE_DNS_BIND=0.0.0.0:53 \
-yarn dev
+yarn lab:up
 ```
 
 このコマンドで起動するもの:
@@ -125,13 +123,15 @@ yarn dev
 - proxy
 - DNS
 
+補足:
+
+- 旧名の `yarn dev:lab` / `yarn dev:lab:down` / `yarn dev:lab:logs` も互換用に残しています
+
 ### 6.2 停止
 
 ```bash
 cd /opt/lab-core
-LAB_CORE_PROXY_HTTP_BIND=0.0.0.0:80 \
-LAB_CORE_DNS_BIND=0.0.0.0:53 \
-yarn dev:kernel:down
+yarn lab:down
 ```
 
 ## 7. 初期確認
@@ -222,13 +222,9 @@ docker compose -f infra/compose/docker-compose.dev.yml ps
 
 ```bash
 cd /opt/lab-core
-LAB_CORE_PROXY_HTTP_BIND=0.0.0.0:80 \
-LAB_CORE_DNS_BIND=0.0.0.0:53 \
-yarn dev:kernel:down
+yarn lab:down
 
-LAB_CORE_PROXY_HTTP_BIND=0.0.0.0:80 \
-LAB_CORE_DNS_BIND=0.0.0.0:53 \
-yarn dev
+yarn lab:up
 ```
 
 ### 11.2 更新前バックアップ
@@ -256,7 +252,7 @@ yarn install
 
 確認:
 
-- `LAB_CORE_PROXY_HTTP_BIND=0.0.0.0:80` を付けて起動したか
+- `yarn lab:up` で起動したか
 - クライアントの DNS が `192.168.11.224` を見ているか
 - `80/tcp` が閉じていないか
 

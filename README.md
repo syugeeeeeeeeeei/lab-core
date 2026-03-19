@@ -31,13 +31,7 @@
 2. `yarn install`
 3. `yarn config:init`
 4. プロファイルで `lab` を選ぶ
-5. 次を実行
-
-```bash
-LAB_CORE_PROXY_HTTP_BIND=0.0.0.0:80 \
-LAB_CORE_DNS_BIND=0.0.0.0:53 \
-yarn dev
-```
+5. `yarn lab:up`
 
 6. `http://dashboard.fukaya-sus.lab/` を開く
 
@@ -47,6 +41,7 @@ yarn dev
 ## 補足
 
 - `yarn dev` は kernel 相当の起動を行い、backend / dashboard / proxy / DNS をまとめて立ち上げます。
+- 本番向けの起動は `yarn lab:up` / `yarn lab:down` を使います。
 - API の主確認先は `http://api.<LAB_CORE_ROOT_DOMAIN>/api` です。
 - 旧来の個別起動も必要なら利用できます。
   - `yarn dev:backend`
