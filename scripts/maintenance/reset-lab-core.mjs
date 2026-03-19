@@ -13,6 +13,8 @@ const force = argv.has("--force");
 const thisFile = fileURLToPath(import.meta.url);
 const rootDir = path.resolve(path.dirname(thisFile), "..", "..");
 const envPath = path.join(rootDir, "core", "backend", ".env");
+const currentUid = typeof process.getuid === "function" ? process.getuid() : 1000;
+const currentGid = typeof process.getgid === "function" ? process.getgid() : 1000;
 
 function loadDotEnv(filePath) {
   const result = {};
@@ -156,6 +158,10 @@ function isSafeTarget(targetPath) {
   return !blocked.has(normalized);
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
 async function pathExists(targetPath) {
   try {
     await fs.access(targetPath);
@@ -166,15 +172,56 @@ async function pathExists(targetPath) {
 }
 
 async function clearDirectoryContents(directoryPath) {
-  await fs.mkdir(directoryPath, { recursive: true });
-  const entries = await fs.readdir(directoryPath);
-  for (const entry of entries) {
-    await fs.rm(path.join(directoryPath, entry), { recursive: true, force: true });
+  try {
+    await fs.mkdir(directoryPath, { recursive: true });
+    const entries = await fs.readdir(directoryPath);
+    for (const entry of entries) {
+      await fs.rm(path.join(directoryPath, entry), { recursive: true, force: true });
+    }
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? error.code : "";
+    if (code !== "EACCES" && code !== "EPERM") {
+      throw error;
+    }
+
+    repairPathOwnership(directoryPath);
+    await fs.mkdir(directoryPath, { recursive: true });
+    const entries = await fs.readdir(directoryPath);
+    for (const entry of entries) {
+      await fs.rm(path.join(directoryPath, entry), { recursive: true, force: true });
+    }
   }
 }
 
 async function removeFileIfExists(filePath) {
-  await fs.rm(filePath, { force: true });
+  try {
+    await fs.rm(filePath, { force: true });
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? error.code : "";
+    if (code !== "EACCES" && code !== "EPERM") {
+      throw error;
+    }
+
+    repairPathOwnership(filePath);
+    await fs.rm(filePath, { force: true });
+  }
+}
+
+function repairPathOwnership(targetPath) {
+  const resolvedPath = path.resolve(targetPath);
+  const parentDir = path.dirname(resolvedPath);
+  const baseName = path.basename(resolvedPath);
+
+  dockerSuccess([
+    "run",
+    "--rm",
+    "-v",
+    `${parentDir}:/target-parent`,
+    "alpine:3.20",
+    "sh",
+    "-lc",
+    `if [ -e ${shellQuote(`/target-parent/${baseName}`)} ]; then chown -R ${currentUid}:${currentGid} ${shellQuote(`/target-parent/${baseName}`)}; fi`
+  ]);
 }
 
 function checkPortOpen(port, host = "127.0.0.1") {

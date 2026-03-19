@@ -150,6 +150,8 @@ cd /opt/lab-core
 yarn lab:down-clean
 ```
 
+このコマンドは内部で先に `yarn lab:down` を実行してから初期化します。
+
 ### 6.3 ログ確認
 
 ```bash
