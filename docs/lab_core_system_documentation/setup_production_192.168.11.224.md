@@ -141,6 +141,15 @@ cd /opt/lab-core
 yarn lab:down
 ```
 
+### 6.2.1 `.env` だけ残して初期化
+
+`yarn config:init` で作成した `core/backend/.env` を残し、それ以外の runtime / DB / generated / Lab-Core 管理下 Docker 資産を消して初期化したい場合は次を使います。
+
+```bash
+cd /opt/lab-core
+yarn lab:down-clean
+```
+
 ### 6.3 ログ確認
 
 ```bash
