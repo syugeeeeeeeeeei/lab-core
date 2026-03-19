@@ -332,7 +332,7 @@ async function runComposeUp(
   composeProjectName: string,
   envFilePath: string | null
 ): Promise<void> {
-  await runCommand("docker", buildComposeArgs(composeFilePath, composeProjectName, ["up", "-d", "--build"], envFilePath), {
+  await runCommand("docker", buildComposeArgs(composeFilePath, composeProjectName, ["up", "-d", "--build", "--remove-orphans"], envFilePath), {
     cwd: repoPath
   });
 }
@@ -352,7 +352,7 @@ async function runComposeStop(
   composeProjectName: string,
   envFilePath: string | null
 ): Promise<void> {
-  await runCommand("docker", buildComposeArgs(composeFilePath, composeProjectName, ["stop"], envFilePath), { cwd: repoPath });
+  await runComposeDown(repoPath, composeFilePath, composeProjectName, envFilePath, true);
 }
 
 async function runComposeDown(
@@ -363,6 +363,7 @@ async function runComposeDown(
   keepData: boolean
 ): Promise<void> {
   const args = buildComposeArgs(composeFilePath, composeProjectName, ["down"], envFilePath);
+  args.push("--remove-orphans");
   if (!keepData) {
     args.push("-v");
   }

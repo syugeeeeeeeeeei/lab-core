@@ -13,6 +13,7 @@ import { systemRouter } from "./routes/system.js";
 import { testingRouter } from "./routes/testing.js";
 import { dnsServer } from "./services/dns-server.js";
 import { recordEvent } from "./services/events.js";
+import { syncInfrastructure } from "./services/infrastructure-sync.js";
 
 const app = new Hono();
 
@@ -52,6 +53,18 @@ if (currentEventCount === 0) {
 }
 
 void dnsServer.start();
+
+try {
+  syncInfrastructure("backend-startup");
+} catch (error) {
+  const message = error instanceof Error ? error.message : "不明なエラー";
+  recordEvent({
+    scope: "infrastructure",
+    level: "warning",
+    title: "起動時の DNS/Proxy 同期に失敗しました",
+    message
+  });
+}
 
 serve(
   {

@@ -72,6 +72,24 @@ function buildCaddyfileVariant(routes: RouteRow[], mode: "default" | "http-only"
   lines.push(`# variant: ${mode}`);
   lines.push("");
 
+  if (mode === "http-only") {
+    const dashboardHost = `dashboard.${env.rootDomain}`;
+    const apiHost = `api.${env.rootDomain}`;
+    lines.push(`http://${dashboardHost} {`);
+    lines.push("  handle /api* {");
+    lines.push(`    reverse_proxy host.docker.internal:${env.port}`);
+    lines.push("  }");
+    lines.push("  handle {");
+    lines.push("    reverse_proxy host.docker.internal:5173");
+    lines.push("  }");
+    lines.push("}");
+    lines.push("");
+    lines.push(`http://${apiHost} {`);
+    lines.push(`  reverse_proxy host.docker.internal:${env.port}`);
+    lines.push("}");
+    lines.push("");
+  }
+
   for (const route of routes) {
     const upstream = route.upstream_container ?? route.public_service_name;
     const siteLabel = mode === "http-only" ? `http://${route.hostname}` : route.hostname;
@@ -111,6 +129,8 @@ function buildDnsHosts(routes: RouteRow[]): string {
   const lines: string[] = [];
   lines.push(`# generated_at: ${nowIso()}`);
   lines.push(`${env.sshServiceIp} ssh.${env.rootDomain}`);
+  lines.push(`${env.mainServiceIp} dashboard.${env.rootDomain}`);
+  lines.push(`${env.mainServiceIp} api.${env.rootDomain}`);
 
   for (const route of routes) {
     lines.push(`${env.mainServiceIp} ${route.hostname}`);

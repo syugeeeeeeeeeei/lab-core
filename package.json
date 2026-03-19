@@ -7,9 +7,15 @@
     "core/dashboard"
   ],
   "scripts": {
-    "dev": "yarn dev:backend",
+    "dev": "yarn dev:kernel:up",
+    "dev:local": "yarn dev:backend",
     "dev:backend": "yarn workspace @lab-core/backend dev",
     "dev:dashboard": "yarn workspace @lab-core/dashboard dev",
+    "dev:core:up": "docker compose -f infra/compose/docker-compose.dev.yml up -d",
+    "dev:core:down": "docker compose -f infra/compose/docker-compose.dev.yml down",
+    "dev:core:logs": "docker compose -f infra/compose/docker-compose.dev.yml logs -f backend dashboard",
+    "dev:kernel:up": "yarn dev:core:up && yarn dev:proxy && yarn dev:proxy:refresh && yarn dev:dns",
+    "dev:kernel:down": "yarn dev:dns:down && yarn dev:proxy:down && yarn dev:core:down",
     "dev:dns": "docker compose -f infra/compose/docker-compose.dns.yml up -d dns",
     "dev:dns:down": "docker compose -f infra/compose/docker-compose.dns.yml down",
     "dev:dns:logs": "docker compose -f infra/compose/docker-compose.dns.yml logs -f dns",

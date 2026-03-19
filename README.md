@@ -10,8 +10,17 @@
 ## 開発開始
 1. `yarn install`
 2. 初回設定ウィザード: `yarn config:init`
-3. `yarn dev:backend`
-4. 別ターミナルで `yarn dev:dashboard`
+3. `yarn dev`
+
+`yarn dev` は kernel 相当の開発起動を行い、backend / dashboard / proxy / DNS をまとめて立ち上げます。
+
+主なアクセス先:
+- `http://dashboard.<LAB_CORE_ROOT_DOMAIN>/`
+- `http://api.<LAB_CORE_ROOT_DOMAIN>/`
+
+旧来の個別起動も必要なら利用できます。
+- `yarn dev:backend`
+- `yarn dev:dashboard`
 
 ## 検証コマンド
 - ビルド確認: `yarn build`
@@ -24,6 +33,7 @@
 
 ## ドキュメント
 - 総合ドキュメント入口: `docs/lab_core_system_documentation/index.md`
+- kernel 構成案: `docs/lab_core_system_documentation/kernel_architecture.md`
 - ダッシュボード詳細マニュアル: `docs/lab_core_system_documentation/user_manual.md`
 - 既存の操作説明書: `docs/readmes/how_to_use_lab_core.md`
 - 適合アプリ作成ガイド: `docs/lab_core_app_repository_guide/app_repository_creation_guide.md`
