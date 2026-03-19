@@ -118,6 +118,22 @@
 補足:
 - 現在は起動前に `core/backend/data/generated/Caddyfile.dev` のプレースホルダを自動生成します
 - 旧 wizard 由来の `/opt/lab-core/apps` などは backend 側で現行パスへ互換変換されます
+- 過去に `sudo yarn lab:up` を実行して root 所有ファイルが残っている場合は、`yarn permissions:repair` を 1 回実行してから再起動します
+
+## 8.1.1 `EACCES: permission denied` で `yarn lab:up` が止まる
+症状:
+`core/backend/data/generated/Caddyfile.dev` や `runtime/` 配下で権限エラーが出る
+
+原因:
+- 過去の `sudo` 実行や旧構成の root コンテナが管理ディレクトリを root 所有で作成した
+
+対処:
+1. `yarn permissions:repair`
+2. `yarn lab:down`
+3. `yarn lab:up`
+
+注意:
+- ふだんの起動は `sudo yarn lab:up` ではなく通常の `yarn lab:up` を使います
 
 ## 8.2 `DNS Resolution Failed ... ECONNREFUSED`
 症状:

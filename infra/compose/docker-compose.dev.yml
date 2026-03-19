@@ -1,10 +1,19 @@
 services:
+  deps:
+    image: node:20-alpine
+    working_dir: /workspace
+    command: sh -lc "apk add --no-cache git docker-cli python3 make g++ && yarn install --frozen-lockfile --non-interactive"
+    volumes:
+      - ../../:/workspace
+      - labcore_node_modules:/workspace/node_modules
+
   backend:
     image: node:20-alpine
     working_dir: /workspace
-    command: sh -lc "apk add --no-cache git docker-cli && yarn install --frozen-lockfile --ignore-optional --non-interactive && yarn dev:backend"
+    command: sh -lc "apk add --no-cache git docker-cli && yarn dev:backend"
     volumes:
       - ../../:/workspace
+      - labcore_node_modules:/workspace/node_modules
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "7300:7300"
@@ -12,12 +21,16 @@ services:
   dashboard:
     image: node:20-alpine
     working_dir: /workspace
-    command: sh -lc "yarn install --frozen-lockfile --ignore-optional --non-interactive && yarn dev:dashboard"
+    command: sh -lc "yarn dev:dashboard"
     volumes:
       - ../../:/workspace
+      - labcore_node_modules:/workspace/node_modules
     environment:
       VITE_DEV_PROXY_TARGET: "http://backend:7300"
     depends_on:
       - backend
     ports:
       - "5173:5173"
+
+volumes:
+  labcore_node_modules:

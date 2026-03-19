@@ -117,6 +117,11 @@ cd /opt/lab-core
 yarn lab:up
 ```
 
+注意:
+
+- `sudo yarn lab:up` は使わず、通常ユーザーで実行します
+- もし過去の実行で権限が崩れている場合は、先に `yarn permissions:repair` を 1 回実行します
+
 このコマンドで起動するもの:
 
 - backend
