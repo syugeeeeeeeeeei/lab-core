@@ -2,7 +2,7 @@ services:
   deps:
     image: node:20-alpine
     working_dir: ${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}
-    command: sh -lc "apk add --no-cache git docker-cli docker-cli-compose python3 make g++ && yarn install --frozen-lockfile --non-interactive"
+    command: sh -lc "apk add --no-cache git docker-cli docker-cli-compose python3 make g++ && corepack yarn install --immutable"
     volumes:
       - ${LAB_CORE_HOST_PROJECT_ROOT:-../../}:${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}
       - labcore_node_modules:${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}/node_modules
@@ -10,7 +10,7 @@ services:
   backend:
     image: node:20-alpine
     working_dir: ${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}
-    command: sh -lc "apk add --no-cache git docker-cli docker-cli-compose && yarn dev:backend"
+    command: sh -lc "apk add --no-cache git docker-cli docker-cli-compose && corepack yarn dev:backend"
     volumes:
       - ${LAB_CORE_HOST_PROJECT_ROOT:-../../}:${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}
       - labcore_node_modules:${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}/node_modules
@@ -21,7 +21,7 @@ services:
   dashboard:
     image: node:20-alpine
     working_dir: ${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}
-    command: sh -lc "yarn workspace @lab-core/dashboard build && yarn workspace @lab-core/dashboard preview --host 0.0.0.0 --port 4173"
+    command: sh -lc "corepack yarn workspace @lab-core/dashboard build && corepack yarn workspace @lab-core/dashboard preview --host 0.0.0.0 --port 4173"
     volumes:
       - ${LAB_CORE_HOST_PROJECT_ROOT:-../../}:${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}
       - labcore_node_modules:${LAB_CORE_HOST_PROJECT_ROOT:-/workspace}/node_modules

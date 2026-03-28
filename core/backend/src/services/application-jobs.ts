@@ -374,6 +374,14 @@ async function runComposeDown(
   await runCommand("docker", args, { cwd: repoPath });
 }
 
+async function runComposeDownByProject(composeProjectName: string, keepData: boolean): Promise<void> {
+  const args = ["compose", "-p", composeProjectName, "down", "--remove-orphans"];
+  if (!keepData) {
+    args.push("-v");
+  }
+  await runCommand("docker", args);
+}
+
 function completeJob(jobId: string, status: Extract<JobStatus, "succeeded" | "failed">, message: string): void {
   finishJob(jobId, status, message);
 }
@@ -848,10 +856,39 @@ export async function executeDeleteJob(applicationId: string, jobId: string, mod
     const repoPath = path.join(env.appsRoot, app.name);
     const appDataPath = path.join(env.appDataRoot, app.name);
 
+    const keepData = mode !== "full";
     if (fs.existsSync(repoPath)) {
       const composeFilePath = path.resolve(repoPath, app.compose_path);
-      const envFilePath = writeComposeEnvFile(app);
-      await runComposeDown(repoPath, composeFilePath, composeProjectName, envFilePath, mode !== "full");
+      if (fs.existsSync(composeFilePath)) {
+        const envFilePath = writeComposeEnvFile(app);
+        await runComposeDown(repoPath, composeFilePath, composeProjectName, envFilePath, keepData);
+      } else {
+        setJobProgress(
+          jobId,
+          `compose ファイルが見つからないため、project 名だけで停止します。compose=${app.compose_path}`
+        );
+        await runComposeDownByProject(composeProjectName, keepData);
+        recordEvent({
+          scope: "application",
+          applicationId,
+          level: "warning",
+          title: "compose ファイルが見つからないため停止手順を切り替えました",
+          message: `compose=${composeFilePath} が存在しないため、docker compose -p ${composeProjectName} down を実行しました。`
+        });
+      }
+    } else {
+      setJobProgress(
+        jobId,
+        `アプリソースが見つからないため、project 名だけで停止します。repo=${repoPath}`
+      );
+      await runComposeDownByProject(composeProjectName, keepData);
+      recordEvent({
+        scope: "application",
+        applicationId,
+        level: "warning",
+        title: "アプリソースが見つからないため停止手順を切り替えました",
+        message: `repo=${repoPath} が存在しないため、docker compose -p ${composeProjectName} down を実行しました。`
+      });
     }
 
     if (mode === "source_and_config" || mode === "full") {
